@@ -43,6 +43,7 @@ namespace Plugin
 		kHeatStrip = 20
 	};
 
+	// in pieces: MSVC takes at most 16,380 bytes in one string literal (adjacent pieces join into one string)
 	inline constexpr std::string_view kBarShader = R"hlsl(
 // Arcane Overdrive - the bars drawn by ONE pixel shader each. Written for this mod from scratch: value noise, fractal noise,
 // a particle grid, rounded-box distances - the textbook versions, nothing taken from another mod.
@@ -281,7 +282,8 @@ float3 Essence(float2 q, float w, float h, float t, float heat, float power, flo
 	return light * (0.9 + 0.2 * Front(head, h));
 }
 
-// Healing: warm golden light welling up from below, gently stirring, golden motes rising with a twinkle - gold, never white
+)hlsl"
+												   R"hlsl(// Healing: warm golden light welling up from below, gently stirring, golden motes rising with a twinkle - gold, never white
 float3 Healing(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
@@ -404,7 +406,8 @@ float3 Generic(float2 q, float w, float h, float t, float heat, float power, flo
 	return light * (0.9 + 0.2 * Front(head, h));
 }
 
-// the frame: dark iron, lit from above
+)hlsl"
+												   R"hlsl(// the frame: dark iron, lit from above
 float3 Metal(float2 p, float2 size)
 {
 	const float bevel = saturate(1.0 - p.y / size.y);
