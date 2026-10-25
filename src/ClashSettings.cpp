@@ -125,9 +125,36 @@ namespace Crossfire
 			a_to.exclude = std::move(exclude);
 		}
 
+		// the rule sections a player may keep in the settings file too ([Elements], [Reactions], [Exclude], read by
+		// LoadSettings): the menu's writer writes only its own sections, so a save carries these over as they were
+		[[nodiscard]] std::string RuleSections(const std::filesystem::path& a_path)
+		{
+			const auto same = [](std::string_view a_a, std::string_view a_b) {
+				return std::ranges::equal(a_a, a_b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
+			};
+			std::ifstream in(a_path, std::ios::binary);
+			std::string   out;
+			std::string   line;
+			bool          keep = false;
+			while (std::getline(in, line)) {
+				const auto start = line.find_first_not_of(" \t");
+				if (start != std::string::npos && line[start] == '[') {
+					const auto        end = line.find(']', start);
+					const std::string name = line.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
+					keep = same(name, "Elements") || same(name, "Reactions") || same(name, "Exclude");
+				}
+				if (keep) {
+					out += line;
+					out += '\n';
+				}
+			}
+			return out;
+		}
+
 		void Save(const Core::Config& a_config)
 		{
 			const std::filesystem::path path(kSettings), temp(std::string(kSettings) + ".tmp");
+			const std::string           rules = RuleSections(path);
 			{
 				std::ofstream out(temp, std::ios::binary | std::ios::trunc);
 				if (!out) {
@@ -135,6 +162,10 @@ namespace Crossfire
 					return;
 				}
 				out << Core::WriteSettings(a_config);
+				if (!rules.empty()) {
+					out << '\n'
+						<< rules;
+				}
 				if (!out.flush()) {
 					SKSE::log::warn("settings: {} could not be written", Core::PathText(temp));
 					return;

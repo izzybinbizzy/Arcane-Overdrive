@@ -63,9 +63,10 @@ namespace Crossfire
 			return V(a_target->GetPosition()) + Vec3{ 0.0f, 0.0f, 0.7f * a_target->GetHeight() };
 		}
 
+		// TDM holds a target (its lock state is only the setting): then TDM aims the player's bolts itself
 		[[nodiscard]] bool TdmLocked()
 		{
-			return gTdm && gTdm->GetTargetLockState();
+			return gTdm != nullptr && static_cast<bool>(gTdm->GetCurrentTarget());
 		}
 
 		// the player's target: the hostile actor nearest the bolt's way, inside the lock cone and range

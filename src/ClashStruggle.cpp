@@ -55,10 +55,15 @@ namespace Crossfire
 		Core::StruggleBook                          gBook;
 		std::unordered_map<std::uint64_t, Rec>      gRecs;
 		std::unordered_map<std::uint32_t, BeamHold> gBeams;
-		// a locked spray's reach (units from the projectile) - read by the FlameProjectile hit hook, which may run off the
-		// main thread
+		// a locked spray's reach and where the spray stood, both taken on the main thread - read by the FlameProjectile hit
+		// hook, which may run off it and so never reads the projectile itself
+		struct FlameCut
+		{
+			float      reach{ 0.0f };
+			Core::Vec3 from;
+		};
 		std::mutex                                                  gFlameCutLock;
-		std::unordered_map<std::uint32_t, float>                    gFlameCut;
+		std::unordered_map<std::uint32_t, FlameCut>                 gFlameCut;
 		std::unordered_set<std::uint64_t>                           gTried;  // pairs that may not lock this frame
 		std::unordered_map<std::uint32_t, std::vector<std::size_t>> gBy;     // shooter -> its streams this frame
 		std::span<const StreamRef>                                  gStreams;
@@ -565,7 +570,7 @@ namespace Crossfire
 							// Its hits are dropped past the cut instead (FlameAddImpact, main.cpp's hook)
 							if (s.projectile->GetFormType() == RE::FormType::ProjectileFlame) {
 								std::scoped_lock lock(gFlameCutLock);
-								gFlameCut.insert_or_assign(s.native, cut);
+								gFlameCut.insert_or_assign(s.native, FlameCut{ cut, s.now });
 							}
 						}
 						h->second.held = true;
@@ -678,7 +683,7 @@ namespace Crossfire
 				return false;
 			}
 			const auto native = RE::ProjectileHandle(a_flame).native_handle();
-			float      cut = 0.0f;
+			FlameCut   cut;
 			{
 				std::scoped_lock lock(gFlameCutLock);
 				const auto       it = gFlameCut.find(native);
@@ -687,7 +692,7 @@ namespace Crossfire
 				}
 				cut = it->second;
 			}
-			return a_flame->GetPosition().GetDistance(a_at) > cut;
+			return Core::Length(Core::Vec3{ a_at.x, a_at.y, a_at.z } - cut.from) > cut.reach;
 		}
 
 		void Reset(bool a_restoreBeams)

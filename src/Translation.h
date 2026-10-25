@@ -50,6 +50,8 @@ namespace Translation
 					if (j < a_s.size() && std::string_view("diouxXeEfFgGaAcspn").find(a_s[j]) != std::string_view::npos) {
 						out.emplace_back(a_s.substr(i, j - i + 1));
 						i = j;
+					} else if (a_format) {
+						out.emplace_back("%?");  // not a conversion printf knows: the line must not be used
 					}
 				} else if (a_s[i] == '{') {
 					const auto j = a_s.find('}', i);

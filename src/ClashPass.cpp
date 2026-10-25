@@ -36,7 +36,6 @@ namespace Crossfire
 			Vec3          last;
 			float         strength{ 0.0f };
 			std::uint32_t frame{ 0 };
-			bool          steered{ false };  // counted once in Stats::steered
 		};
 
 		// one projectile in this frame's pass
@@ -81,6 +80,7 @@ namespace Crossfire
 
 		std::unordered_map<std::uint32_t, Track>  gTracks;
 		std::unordered_map<std::uint32_t, double> gKilled;   // handles we killed, and when: never touched again
+		std::unordered_map<std::uint32_t, double> gSteered;  // handles counted in Stats::steered, and when (a Track can be remade)
 		std::unordered_map<std::uint64_t, bool>   gHostile;  // this frame's answers, by pair of shooters
 		std::unordered_set<std::uint64_t>         gSettled;  // pairs of projectiles already settled: a bolt or a wall that
 															 // lasts several frames meets a projectile once, not every frame
@@ -197,8 +197,7 @@ namespace Crossfire
 				}
 				TurnProjectile(pa, *best);
 				a.dir = *best;
-				if (!a.track->steered) {
-					a.track->steered = true;
+				if (gSteered.try_emplace(a.handle, gClock).second) {
 					gStats.steered.fetch_add(1, std::memory_order_relaxed);
 				}
 			}
@@ -370,6 +369,7 @@ namespace Crossfire
 	{
 		gTracks.clear();
 		gKilled.clear();
+		gSteered.clear();
 		gHostile.clear();
 		gSettled.clear();
 		gLinger.clear();
@@ -417,6 +417,7 @@ namespace Crossfire
 		gBodies.clear();
 		gHostile.clear();
 		std::erase_if(gKilled, [](const auto& a_kv) { return gClock - a_kv.second > 2.0; });
+		std::erase_if(gSteered, [](const auto& a_kv) { return gClock - a_kv.second > 30.0; });  // longer than a bolt flies
 
 		for (const auto& h : gHandles) {
 			const std::uint32_t native = h.native_handle();
