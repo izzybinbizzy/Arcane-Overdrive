@@ -3,9 +3,10 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # TrueDirectionalMovementAPI.h is True Directional Movement's own header, kept byte for byte as its author ships it
       - id: trailing-whitespace
-        exclude: (^|/)lib/
+        exclude: (^|/)lib/|^src/TrueDirectionalMovementAPI\.h$
       - id: end-of-file-fixer
-        exclude: (^|/)lib/
+        exclude: (^|/)lib/|^src/TrueDirectionalMovementAPI\.h$
       - id: check-yaml
       - id: check-added-large-files
