@@ -835,7 +835,9 @@ namespace
 			std::ifstream     in(here + "../package/SKSE/Plugins/" + a_name, std::ios::binary);
 			std::stringstream text;
 			text << in.rdbuf();
-			return std::pair{ in.good() || in.eof(), text.str() };
+			auto s = text.str();
+			std::erase(s, '\r');  // a Windows checkout may turn the line ends into CRLF; the plugin reads either
+			return std::pair{ in.good() || in.eof(), s };
 		};
 		const auto [menuOk, shippedMenu] = shippedText("SpellMasteryHeat.ini");
 		const auto [advancedOk, shippedAdvanced] = shippedText("SpellMasteryHeat Advanced.ini");
