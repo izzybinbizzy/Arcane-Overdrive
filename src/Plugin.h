@@ -9,7 +9,6 @@
 #include "Heat.h"
 #include "Scaled.h"
 #include "SettingsText.h"
-#include "SpellLook.h"
 
 namespace Plugin
 {
@@ -58,71 +57,53 @@ namespace Plugin
 
 	struct MeterView
 	{
-		float                charge{ 0.0f };  // the Overdrive bar, 0 to 100
-		float                heat{ 0.0f };    // the Heat bar, 0 to 100
-		Heat::Stage          stage{ Heat::Stage::kCold };
-		Heat::Meter::State   state{ Heat::Meter::State::kBuilding };
-		float                timer{ 0.0f }, timerOf{ 1.0f };  // Overdrive's or the cooldown's seconds left, and of how many
-		bool                 ready{ false };                  // the Overdrive bar full, waiting for the gate or the key
-		Heat::GateNow        gate{ Heat::GateNow::kOpen };
-		float                bandLow{ 50.0f }, redLine{ 85.0f };  // the sweet spot on the Heat bar, for drawing it
-		bool                 redZone{ false };
-		float                focus{ 0.0f };    // the focus gate's hold so far, 0 to 1
-		float                misfire{ 0.0f };  // a misfire's flash, 1 as it happens down to 0
-		int                  misfires{ 0 };    // since the game was loaded
-		Heat::School         last{ Heat::School::kNone };
-		float                bonus{ 1.0f };                      // a spell's multiplier now
-		float                regen{ 1.0f };                      // magicka regeneration now, against normal
-		std::size_t          enemies{ 0 };                       // enemies with a meter of their own
-		std::uint64_t        boosted{ 0 };                       // effects boosted since the game started
-		int                  element{ 0 };                       // the last counted spell's element (0 none, 1 fire, 2 frost, 3 shock): the flames' tint
-		SpellLook::Look      look{ SpellLook::Look::kGeneric };  // the HUD look: the last spell that built heat, else the one in hand
-		const RE::MagicItem* spell{ nullptr };                   // the spell that look is of (its own art feeds the spell bar - SpellArt.cpp)
+		float              charge{ 0.0f };  // the Overdrive bar, 0 to 100
+		float              heat{ 0.0f };    // the Heat bar, 0 to 100
+		Heat::Stage        stage{ Heat::Stage::kCold };
+		Heat::Meter::State state{ Heat::Meter::State::kBuilding };
+		float              timer{ 0.0f }, timerOf{ 1.0f };  // Overdrive's or the cooldown's seconds left, and of how many
+		bool               ready{ false };                  // the Overdrive bar full, waiting for the gate or the key
+		Heat::GateNow      gate{ Heat::GateNow::kOpen };
+		float              bandLow{ 50.0f }, redLine{ 85.0f };  // the sweet spot on the Heat bar, for drawing it
+		bool               redZone{ false };
+		float              focus{ 0.0f };    // the focus gate's hold so far, 0 to 1
+		float              misfire{ 0.0f };  // a misfire's flash, 1 as it happens down to 0
+		int                misfires{ 0 };    // since the game was loaded
+		Heat::School       last{ Heat::School::kNone };
+		float              bonus{ 1.0f };  // a spell's multiplier now
+		float              regen{ 1.0f };  // magicka regeneration now, against normal
+		std::size_t        enemies{ 0 };   // enemies with a meter of their own
+		std::uint64_t      boosted{ 0 };   // effects boosted since the game started
 	};
-	[[nodiscard]] MeterView PlayerView();  // a copy, from any thread
+	[[nodiscard]] MeterView PlayerView();                  // a copy, from any thread
+	[[nodiscard]] float     ChargeOf(RE::Actor* a_actor);  // any thread: an actor's Overdrive bar, 0 when it has none
 
-	// ------------------------------------------------------------------ Looks.cpp: which HUD look a spell gets (SpellLook.h)
-	[[nodiscard]] SpellLook::Look LookOf(const RE::MagicItem* a_item);  // from the spell's own data, never its name
-	// a held spell that builds heat, being cast now (the right hand first); none: nothing held
-	[[nodiscard]] const RE::MagicItem* HeldSpell(RE::Actor* a_actor, const Settings& a_settings);
-	[[nodiscard]] const RE::MagicItem* EquippedSpell(RE::PlayerCharacter* a_player);  // the spell in the right hand, else the left
-
-	// ------------------------------------------------------------------ SpellArt.cpp: the spell's own color, for the bars
-	struct SpellArtView
+	// ------------------------------------------------------------------ TrueHud.cpp: the Overdrive bar as TrueHUD's special bar
+	enum class TrueHudState : std::uint8_t
 	{
-		std::uint32_t form{ 0 };         // the spell
-		bool          colored{ false };  // the color below is the spell's own (its light's, else its art's)
-		float         r{ 1.0f }, g{ 1.0f }, b{ 1.0f };
+		kMissing,  // TrueHUD is not installed
+		kOff,      // the switch is off
+		kTaken,    // another mod holds the special bar
+		kOurs
 	};
-	void                        NoteSpellArt(const RE::MagicItem* a_item);  // main thread, every frame (read once per spell)
-	void                        ForgetSpellArt();                           // a game is loading
-	[[nodiscard]] SpellArtView  SpellArtNow();                              // a copy, from any thread
-	[[nodiscard]] std::uint32_t SpellArtVersion();                          // changes with every new view (the HUD copies one only then)
-
-	// ------------------------------------------------------------------ HudBars.cpp: the high-res bars (BarShader.h)
-	struct LookStats
-	{
-		int           shown{ -1 };                           // the look last drawn (SpellLook::Look), -1 none yet
-		int           forced{ -1 };                          // the bench's choice, -1 the spell's own
-		float         drawUsAvg{ 0.0f }, drawUsMax{ 0.0f };  // our part of a frame on the render thread, microseconds
-		int           shaderState{ 0 };                      // 0 not asked yet, 1 compiling, 2 drawing, 3 failed (a plain bar stands in)
-		float         shaderMs{ 0.0f };                      // its compile time
-		std::uint32_t shaderCalls{ 0 };                      // its draws so far
-		float         gpuUs{ -1.0f };                        // the bars' GPU time a frame, microseconds (-1 until the clock is on)
-		bool          gpuClock{ false };                     // the GPU clock is on (DevBench set=gpu, the Debug page)
-	};
-	[[nodiscard]] LookStats LookStatsNow();
-	void                    BenchForceLook(int a_look);  // the Debug page and DevBench: show this look whatever the spell (-1: the spell's own)
-	void                    BenchGpuClock(bool a_on);    // DevBench: time the bars on the GPU (and start every cost reading afresh)
+	void                       FindTrueHud();                                             // SKSE's post-load
+	void                       UpdateTrueHud(const MeterView& a_v, const Settings& a_s);  // main thread, every frame
+	void                       ForgetTrueHud();                                           // a game is loading
+	[[nodiscard]] TrueHudState TrueHudNow();
 
 	// ------------------------------------------------------------------ Overload.cpp: the overcharge on the spells themselves
 	void                UpdateOverload(const MeterView& a_v, const Settings& a_s, float a_dt);  // main thread, every frame, before the hands
 	void                ReleaseOverload();                                                      // every art and projectile back as it was found
 	[[nodiscard]] float HandLightFactor(std::size_t a_hand);                                    // 1, or a dim ember while that hand's spell sputters out
+	void                NoteSpawned(RE::TESObjectREFR* a_ref);                                  // any thread: an explosion or hazard was just made (the hooks)
 	struct OverloadView
 	{
-		float       power{ 1.0f };                          // the spells' size now (Overload::Power, eased)
-		std::size_t arts{ 0 }, projectiles{ 0 }, out{ 0 };  // casting arts and projectiles ours this frame, hands sputtered out
+		float         power{ 1.0f };                          // the spells' size now (Overload::Growth, eased; the focus pull not in it)
+		std::size_t   arts{ 0 }, projectiles{ 0 }, out{ 0 };  // casting arts and projectiles ours this frame, hands sputtered out
+		float         wild{ 0.0f };                           // the red zone's wildness now (Overload::RedDepth, eased)
+		float         pull{ 1.0f };                           // Overdrive's focus pull now
+		std::size_t   impacts{ 0 }, hits{ 0 };                // our explosions / hazards grown, and hit effects sped, this frame
+		std::uint32_t explosions{ 0 }, hazards{ 0 };          // ours grown since the game was loaded
 	};
 	[[nodiscard]] OverloadView OverloadNow();
 

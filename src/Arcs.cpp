@@ -9,7 +9,7 @@
 //                       full bar back; then Overdrive counting down with an alarm, and the burnout draining
 //   the Heat bar        the heat in four pieces (Warm, Hot, Overheating at the default stages), a soft flow at Warm and Hot, a
 //                       pulse at Overheating, the warning colour and an alarm in the red zone; it drains with Overdrive
-// No color is sent (his word above). While Reticle Arcs shows them, our own bars step aside; without it nothing changes.
+// No color is sent (his word above). A menu choice beside TrueHUD's special bar (TrueHud.cpp); off by default.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
@@ -133,11 +133,11 @@ namespace Plugin
 	void RegisterArcBar()
 	{
 		if (!::GetModuleHandleW(L"ReticleArcs.dll")) {
-			return;  // no Reticle Arcs: our own bars, as always
+			return;  // no Reticle Arcs: TrueHUD's bar only
 		}
 		auto* arcs = ReticleArcsAPI::Request();
 		if (!arcs) {
-			SKSE::log::info("Reticle Arcs is too old for add-on bars; the bars stay our own");
+			SKSE::log::info("Reticle Arcs is too old for add-on bars; TrueHUD's bar only");
 			return;
 		}
 		ReticleArcsAPI::BarDefinition charge;

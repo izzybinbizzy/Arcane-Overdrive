@@ -26,14 +26,11 @@
 //   Spells.cpp      what a spell is to the meter (school, kind, held, element) and which effects are boosted
 //   Meters.cpp      the bars: casts, held spells, the key, the clocks, slow magicka, a misfire's backlash, the bonus
 //   Hands.cpp       the lights on the casting hands, scaled (and the optional hand glow of its own)
-//   Menu.cpp        the settings and debug pages in SKSE Menu Framework, and the HUD element that draws the bars
-//   SpellLook.h     which HUD look a spell gets (his list of looks per spell type) - tests/test_heat.cpp
-//   Looks.cpp       a game spell read into SpellLook.h's facts
-//   SpellArt.cpp    the spell's own color (its light, else its art), for the bars
-//   BarShader.h     the bars' pixel shader: every spell kind's look, the frame, the Heat strip - drawn off the game by a bench
-//   HudBars.*       the high-res bars on the HUD: the Overdrive bar and the Heat bar, each one quad of BarShader.h
-//   Overload.h      the overcharge on the spells as plain numbers: growth in Overdrive, the burnout's sputter - tests
-//   Overload.cpp    puts them on the casting art in the hands and the player's spell projectiles
+//   Menu.cpp        the settings and debug pages in SKSE Menu Framework
+//   TrueHud.cpp     the Overdrive bar as TrueHUD's special bar, colored by the Heat
+//   Arcs.cpp        both bars as Reticle Arcs arcs round the crosshair
+//   Overload.h      the overcharge on the spells as plain numbers: growth with the bar, the red zone, the focus, the sputter - tests
+//   Overload.cpp    puts them on the casting art in the hands, the player's projectiles, explosions, hazards and hit effects
 //   Marks.h         the scorch / frost marks as plain numbers: the cap, the refresh, the lifetime, the hurt ticks - tests
 //   Marks.cpp       finds the Overheating impacts, shows each mark with a vanilla hazard's model, hurts who stands in it
 //   DevBench.cpp    what DevBench can read and do
@@ -42,8 +39,8 @@
 //                   is; ClashAim.cpp auto lock; ClashSettings.cpp the files; ClashMenu.cpp its two pages; ClashDevBench.cpp
 //   Plugin.h        what they share      PCH.h  what they all include
 //   MenuStyle.h     the menu look every plugin of ours shares (Dynamic Wards' copy is the master)
-//   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h  other authors' headers, copied unchanged (their
-//                   licenses beside them; TDM's is GPL-3.0, as this plugin)
+//   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h, TrueHUDAPI.h, ReticleArcsAPI.h  other authors'
+//                   headers, copied unchanged (their licenses beside them; TDM's and TrueHUD's are GPL-3.0, as this plugin)
 
 #include "Plugin.h"
 #include "ClashShared.h"
@@ -100,6 +97,25 @@ namespace
 		{
 			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[4] };  // MagicTarget
 			func = vtbl.write_vfunc(0x01, thunk);
+		}
+	};
+
+	// ------------------------------------------------------------------ each explosion and hazard as it is made
+	// Initialize (SE/AE 0xA2, VR 0xA3) runs once as one is made: it is noted, and Overload.cpp grows the player's to the size
+	// their spells had then
+	template <class T>
+	struct Made
+	{
+		static void thunk(T* a_this)
+		{
+			func(a_this);
+			Plugin::NoteSpawned(a_this);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+		static void                                    Install()
+		{
+			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[0] };
+			func = vtbl.write_vfunc(REL::Relocate(0xA2, 0xA2, 0xA3), thunk);
 		}
 	};
 
@@ -225,13 +241,15 @@ namespace
 		PlayerUpdate::Install();
 		AddTarget<RE::Character>::Install();
 		AddTarget<RE::PlayerCharacter>::Install();
+		Made<RE::Explosion>::Install();
+		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
 			holder->AddEventSink<RE::TESSpellCastEvent>(CastSink::Get());
 		}
 		if (auto* input = RE::BSInputDeviceManager::GetSingleton()) {
 			input->AddEventSink(InputSink::Get());
 		}
-		SKSE::log::info("hooked the player update and each effect as it lands; listening for spell casts and the Overdrive key");
+		SKSE::log::info("hooked the player update, each effect as it lands and each explosion / hazard as it is made; listening for spell casts and the Overdrive key");
 		// the clashes and spell struggles
 		Crossfire::LoadSettings();
 		Crossfire::Survey();
@@ -268,6 +286,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			Plugin::OfferToDevBench();
 			Crossfire::OfferToDevBench();
 			Crossfire::FindTdm();
+			Plugin::FindTrueHud();
 			Plugin::RegisterArcBar();  // Reticle Arcs takes add-on bars now or never
 			break;
 		case SKSE::MessagingInterface::kDataLoaded:
@@ -285,7 +304,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			Plugin::ReleaseHands();
 			Plugin::ReleaseOverload();
 			Plugin::ReleaseMarks();
-			Plugin::ForgetSpellArt();
+			Plugin::ForgetTrueHud();
 			break;
 		default:
 			break;

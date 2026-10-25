@@ -48,9 +48,7 @@ namespace Plugin
 		Track                                    gPlayer;
 		std::unordered_map<std::uint32_t, Track> gEnemies;  // by the actor's handle
 		std::vector<Cast>                        gCasts;
-		std::optional<SpellLook::Look>           gLastLook;              // the HUD look of the player's last spell that built heat
-		const RE::MagicItem*                     gLastSpell{ nullptr };  // and that spell (its own art feeds the spell bar)
-		float                                    gMisfire{ 0.0f };       // a misfire's flash left, seconds
+		float                                    gMisfire{ 0.0f };  // a misfire's flash left, seconds
 
 		std::atomic<bool>          gKey{ false };
 		std::atomic<bool>          gKeyHeld{ false };
@@ -256,7 +254,7 @@ namespace Plugin
 		const auto  enemyTuning = EnemyTuning(t);
 		Heat::Stage stage = Heat::Stage::kCold;
 		MeterView   view;
-		bool        lookKnown = false, backlash = false;
+		bool        backlash = false;
 		{
 			std::lock_guard   lock(gLock);
 			std::vector<Cast> casts;
@@ -270,10 +268,6 @@ namespace Plugin
 				}
 				if (auto* track = TrackOf(actor, s, true)) {
 					track->meter.Cast(track == &gPlayer ? t : enemyTuning, info.school, CostOf(c.item, actor), info.element, c.dual);
-					if (track == &gPlayer) {
-						gLastLook = LookOf(c.item);
-						gLastSpell = c.item;
-					}
 					if (s.debugLog && track == &gPlayer) {
 						SKSE::log::info("cast {} ({}{}): charge {:.0f}, heat {:.0f}, {}", c.item->GetName(), Heat::SchoolName(info.school), c.dual ? ", dual" : "",
 							gPlayer.meter.Charge(t), gPlayer.meter.HeatNow(), Heat::StageName(gPlayer.meter.StageNow(t)));
@@ -305,10 +299,6 @@ namespace Plugin
 			}
 
 			Held(player, gPlayer, t, s, dt);
-			if (const auto* held = HeldSpell(player, s)) {
-				gLastLook = LookOf(held);
-				gLastSpell = held;
-			}
 			const bool focusing = (t.mode == Heat::OverdriveMode::kKey && gKeyHeld.load()) || HandsCharged(player);
 			gPlayer.meter.Focus(t, focusing, dt);
 			gPlayer.meter.Tick(t, dt);
@@ -352,30 +342,15 @@ namespace Plugin
 			view.bonus = m.Bonus(t);
 			view.regen = m.MagickaRegen(t);
 			view.enemies = gEnemies.size();
-			view.look = gLastLook.value_or(SpellLook::Look::kGeneric);
-			view.spell = gLastSpell;
-			lookKnown = gLastLook.has_value();
 		}
 		if (backlash) {
 			Backlash(player, t, s.debugLog);
 		}
-		if (!lookKnown) {  // nothing has built heat yet: the spell in hand (read outside the lock, as the tint below)
-			view.spell = EquippedSpell(player);
-			view.look = LookOf(view.spell);
-		}
 		view.boosted = gBoosted.load();
-		// the flames' tint: the element of the spell in the right hand, else the left (none: the heat's own colors)
-		for (const bool leftHand : { false, true }) {
-			const auto* item = player->GetEquippedObject(leftHand);
-			if (const auto* spell = item ? item->As<RE::MagicItem>() : nullptr; spell && Read(spell).element != 0) {
-				view.element = Read(spell).element;
-				break;
-			}
-		}
-		NoteSpellArt(view.spell);     // the spell's own textures and color for the spell bar (read once per spell)
 		UpdateOverload(view, s, dt);  // the spells grow with the charge, sputter in the cooldown and at a misfire - before the hand lights read it
 		UpdateHands(stage, stage, s);
 		UpdateMarks(view, s, dt);  // Overheating fire / frost spells leave scorch / frost marks that hurt
+		UpdateTrueHud(view, s);
 		std::lock_guard lock(gViewLock);
 		gView = view;
 	}
@@ -410,8 +385,6 @@ namespace Plugin
 		gPlayer = {};
 		gEnemies.clear();
 		gCasts.clear();
-		gLastLook.reset();
-		gLastSpell = nullptr;
 		gMisfire = 0.0f;
 		gKey = false;
 		gKeyHeld = false;
@@ -421,5 +394,16 @@ namespace Plugin
 	{
 		std::lock_guard lock(gViewLock);
 		return gView;
+	}
+
+	float ChargeOf(RE::Actor* a_actor)
+	{
+		const auto s = Config();
+		if (!a_actor || !s.enabled) {
+			return 0.0f;
+		}
+		std::lock_guard lock(gLock);
+		const auto*     track = TrackOf(a_actor, s, false);
+		return track ? track->meter.Charge(track == &gPlayer ? s.tuning : EnemyTuning(s.tuning)) : 0.0f;
 	}
 }

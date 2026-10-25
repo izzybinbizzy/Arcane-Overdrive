@@ -9,11 +9,13 @@ The plugin of Arcane Overdrive - it is the whole mod: no plugin file, no scripts
   the last cast). Casting fast builds Heat, which cools when you ease off; its stages - Warm, Hot, Overheating - make
   damage spells a little stronger and the lights on the casting hands a little brighter and wider.
 - A full Overdrive bar goes when Heat lets it: by default only in a sweet spot (too cold does nothing, too hot misfires);
-  presets Milk Drinker, Dragonborn and Aedra. Overdrive is a short burst at the top bonus where the spells grow, then a
-  burnout with slower magicka.
+  presets Milk Drinker, Dragonborn and Aedra. Overdrive is a short burst at the top bonus, then a burnout with slower
+  magicka.
+- The spells grow with the Overdrive bar (the casting art, projectiles, the player's explosions and hazards), turn wild
+  while Heat is in the red, and are drawn in and steadied as Overdrive fires (`src/Overload.*`).
 - From Overheating up, fire and frost spells leave burning or frozen patches where they land (they can hurt, a switch).
-- The bars on the HUD - the Overdrive bar shows the magic of the spell being cast, drawn by one pixel shader
-  (`src/BarShader.h`) - or beside Reticle Arcs' crosshair when it is installed.
+- The Overdrive bar is TrueHUD's special bar, colored by the Heat (`src/TrueHud.cpp`, through `src/TrueHUDAPI.h`);
+  both bars can also be Reticle Arcs arcs round the crosshair (`src/Arcs.cpp`).
 - Clashes: projectiles that meet in the air clash by element (the stronger flies on, or both go and burst); spell
   struggles: sprays, held beams and breath that meet head on lock and push, the higher magic skill breaks through
   (`src/Clash*`, the game-free core tested by `tests/test_clash.cpp`); auto lock aims bolts at the foe and
@@ -26,7 +28,8 @@ both destroyed, sender the first's shooter) and `ArcaneOverdrive_Struggle` (strA
 - `src/CrossfireAPI.h`.
 
 ## Requires
-SKSE and Address Library for SKSE Plugins; SKSE Menu Framework for the menu and the HUD bar. Reticle Arcs is optional.
+SKSE and Address Library for SKSE Plugins; SKSE Menu Framework for the menu. TrueHUD (the bar) and Reticle Arcs (the
+arcs) are optional.
 
 ## Settings
 SKSE Menu Framework > Arcane Overdrive (every part on or off, the preset), saved to
