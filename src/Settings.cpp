@@ -70,8 +70,9 @@ namespace Plugin
 			for (const auto& p : read.problems) {
 				SKSE::log::warn("settings: {}: {}", a_path, p);
 			}
-			a_allAdvanced = std::ranges::all_of(SettingsText::kAdvancedKeys, [&all](const SettingsText::Key& k) {
-				return all.find(std::string("\n") + k.name + "=") != std::string::npos || all.starts_with(std::string(k.name) + "=");
+			// every advanced key the reader took (spaces round "=", any section, any case), never a match in the raw text
+			a_allAdvanced = std::ranges::all_of(SettingsText::kAdvancedKeys, [&read](const SettingsText::Key& k) {
+				return std::ranges::any_of(read.names, [&k](const char* a_name) { return IniText::SameText(a_name, k.name); });
 			});
 			return read.taken;
 		}

@@ -98,6 +98,7 @@ namespace IniText
 	{
 		int                      taken{ 0 };
 		std::vector<std::string> problems;  // "Key=value: why", for the log
+		std::vector<const char*> names;     // the table's own name of every key taken
 	};
 
 	// reads the lines of the table's sections into a_s; a line that cannot be used keeps the default and is reported
@@ -137,13 +138,15 @@ namespace IniText
 			if (std::ranges::any_of(a_retired, [key](std::string_view k) { return SameText(key, k); })) {
 				continue;
 			}
-			if (!Find(a_keys, key)) {
+			const auto* found = Find(a_keys, key);
+			if (!found) {
 				r.problems.push_back(std::string(key) + ": not a setting");
 			} else if (!ReadInt(val, v)) {
 				r.problems.push_back(std::string(key) + "=" + std::string(val) + ": not a whole number; the default stays");
 			} else {
 				Apply(a_keys, a_s, key, v);
 				++r.taken;
+				r.names.push_back(found->name);
 			}
 		}
 		return r;

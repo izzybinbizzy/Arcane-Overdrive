@@ -205,19 +205,20 @@ namespace Plugin
 
 		// a hand's magic node in one skeleton (a_view 0 first person, 1 third), searched by name only when that skeleton changes
 		// or once a second: a name search walks the whole skeleton, every frame it was most of this mod's own frame time
+		struct FoundNode
+		{
+			RE::NiAVObject*           root{ nullptr };
+			RE::NiPointer<RE::NiNode> node;
+			std::uint32_t             frame{ 0 };
+		};
+		std::array<FoundNode, 4> gFound{};  // per hand and skeleton; let go in ReleaseHands
+
 		RE::NiNode* MagicNodeOf(RE::PlayerCharacter* a_player, std::size_t a_hand, std::size_t a_view)
 		{
-			struct Found
-			{
-				RE::NiAVObject*           root{ nullptr };
-				RE::NiPointer<RE::NiNode> node;
-				std::uint32_t             frame{ 0 };
-			};
-			static std::array<Found, 4>    found{};
 			static const RE::BSFixedString kNames[2]{ kNodes[0], kNodes[1] };
 			constexpr std::uint32_t        kRefind = 60;
 			auto*                          root = a_player->Get3D(a_view == 0);
-			auto&                          f = found[a_hand * 2 + a_view];
+			auto&                          f = gFound[a_hand * 2 + a_view];
 			if (f.root != root || gFrame - f.frame > kRefind) {
 				auto* obj = root ? root->GetObjectByName(kNames[a_hand]) : nullptr;
 				f.root = root;
@@ -304,6 +305,7 @@ namespace Plugin
 		gLights.clear();
 		DropOwn(gOwn[0]);
 		DropOwn(gOwn[1]);
+		gFound = {};
 		gScaled = 0;
 		gFrozen = 0;
 		gOwnCount = 0;

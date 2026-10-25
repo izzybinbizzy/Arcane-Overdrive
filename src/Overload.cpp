@@ -148,10 +148,12 @@ namespace Plugin
 
 		// the player's spell projectiles in the world, from the game's own projectile lists (main thread only: the two lists
 		// are kept from frame to frame so a frame allocates nothing)
+		std::vector<RE::NiPointer<RE::Projectile>> gSpellProjectiles;  // this frame's only: emptied at the end of every update
+
 		const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellProjectiles(RE::PlayerCharacter* a_player)
 		{
-			static std::vector<RE::NiPointer<RE::Projectile>> out;
-			static std::vector<RE::ProjectileHandle>          handles;
+			auto&                                    out = gSpellProjectiles;
+			static std::vector<RE::ProjectileHandle> handles;
 			out.clear();
 			handles.clear();
 			auto* mgr = RE::Projectile::Manager::GetSingleton();
@@ -236,6 +238,7 @@ namespace Plugin
 			gLight[0] = 1.0f;
 			gLight[1] = 1.0f;
 		}
+		gSpellProjectiles.clear();  // keeps its room, lets the projectiles go
 		PutBack();
 		gPowerNow = gPower;
 		gArts = arts;
@@ -245,6 +248,7 @@ namespace Plugin
 
 	void ReleaseOverload()
 	{
+		gSpellProjectiles.clear();
 		gFrame += kKeepFrames + 2;
 		PutBack();
 		gPower = 1.0f;
