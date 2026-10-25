@@ -29,6 +29,9 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <set>
+#include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>

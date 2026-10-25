@@ -14,6 +14,16 @@ The plugin of Arcane Overdrive - it is the whole mod: no plugin file, no scripts
 - From Overheating up, fire and frost spells leave burning or frozen patches where they land (they can hurt, a switch).
 - The bars on the HUD - the Overdrive bar shows the magic of the spell being cast, drawn by one pixel shader
   (`src/BarShader.h`) - or beside Reticle Arcs' crosshair when it is installed.
+- Clashes: projectiles that meet in the air clash by element (the stronger flies on, or both go and burst); spell
+  struggles: sprays, held beams and breath that meet head on lock and push, the higher magic skill breaks through
+  (`src/Clash*`, the game-free core tested by `tests/test_clash.cpp`); auto lock aims bolts at the foe and
+  steers them into oncoming spells (`src/ClashAim.cpp` - the way a projectile is turned is True Directional Movement's).
+
+## For other mods
+Papyrus gets the mod events `ArcaneOverdrive_Clash` (strArg "Fire,Frost", numArg 1 / 2 / 3 = the first / second /
+both destroyed, sender the first's shooter) and `ArcaneOverdrive_Struggle` (strArg "began|overwhelmed|gave way|draw|ended,
+<element>,<element>", numArg 1 the player won, -1 lost); SKSE plugins listen with `RegisterListener("SpellMasteryHeat", ...)`
+- `src/CrossfireAPI.h`.
 
 ## Requires
 SKSE and Address Library for SKSE Plugins; SKSE Menu Framework for the menu and the HUD bar. Reticle Arcs is optional.
@@ -21,11 +31,13 @@ SKSE and Address Library for SKSE Plugins; SKSE Menu Framework for the menu and 
 ## Settings
 SKSE Menu Framework > Arcane Overdrive (every part on or off, the preset), saved to
 `Data\SKSE\Plugins\SpellMasteryHeat.ini`; every number in `SpellMasteryHeat Advanced.ini` beside it, each line explained.
+The clashes: `SpellMasteryHeat Clashes.ini` (the menu's) and `SpellMasteryHeat Clash Rules.ini` (what meets what; patches
+in the `SpellMasteryHeat Clash` folder).
 The shipped settings files are in `package/` (installed to `Data\SKSE\Plugins\`).
 
 ## Building
 `build.bat` (git, xmake 3 and the Visual Studio C++ tools): CommonLib at the pinned commit, the DLL, then the off-game
-tests (`tests/test_heat.cpp`).
+tests (`tests/test_heat.cpp`, `tests/test_clash.cpp`).
 
 ## Third-party files
 `src/SKSEMenuFramework.h` is SKSE Menu Framework's own header by Thiago Kaique, copied unchanged from
@@ -37,3 +49,7 @@ their author (see `src/DevBenchAPI.LICENSE.txt`) and copied unchanged. devbench 
 
 `src/ReticleArcsAPI.h` is Reticle Arcs' add-on interface by Chiktabba, MIT licensed (the notice at its top), copied
 unchanged. Reticle Arcs is not required.
+
+`src/TrueDirectionalMovementAPI.h` is True Directional Movement's interface by Ershin
+([ersh1/TrueDirectionalMovement](https://github.com/ersh1/TrueDirectionalMovement)), GPL-3.0, copied unchanged.
+True Directional Movement is not required.

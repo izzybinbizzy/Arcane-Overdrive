@@ -47,6 +47,16 @@ target("SpellMasteryHeat", function()
     set_warnings("allextra", "error")
 end)
 
+-- the clashes' and spell struggles' core (Crossfire's), tested without the game: xmake build test_clash && xmake run test_clash
+target("test_clash", function()
+    set_kind("binary")
+    set_default(false)
+    add_files("tests/test_clash.cpp") -- it includes src/ClashCore.cpp itself
+    add_defines("_CRT_SECURE_NO_WARNINGS") -- the test reads the shipped rules file with fopen, as the sanitizer build does
+    add_includedirs("src")
+    set_warnings("allextra", "error")
+end)
+
 -- the whole meter, tested without the game: xmake build test_heat && xmake run test_heat
 target("test_heat", function()
     set_kind("binary")
