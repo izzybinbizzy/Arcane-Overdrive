@@ -11,6 +11,8 @@
 
 #include "ClashShared.h"
 
+#include <thread>
+
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
 #endif
@@ -40,8 +42,12 @@ namespace Crossfire
 		Vec3 V(const RE::NiPoint3& a) { return { a.x, a.y, a.z }; }
 
 		constexpr float kRadians = 0.017453292f;
+		constexpr float kLaunchReach = 300.0f;     // units a bolt may have flown and still count as just launched
+		constexpr float kAimedAlready = 0.99996f;  // cos 0.5 degrees: a beam already pointing this close is not turned again
 
 		TDM_API::IVTDM1* gTdm{ nullptr };
+		std::thread::id  gMainThread;  // the settings and the projectile cache are the main thread's
+		std::atomic_bool gToldOffThread{ false };
 
 		// the target's chest, else a point at chest height - not its casting hand: a bolt aimed at a hand held out in front slips
 		// past the body, and two bolts fired chest to chest pass close enough to meet
@@ -77,11 +83,8 @@ namespace Crossfire
 				if (!a || a == a_player || a->IsDead() || a->IsDisabled() || !a->IsHostileToActor(a_player)) {
 					continue;
 				}
-				const auto aim = AimPointOf(a);
-				if (!aim) {
-					continue;
-				}
-				const Vec3  to = *aim - a_from;
+				// chest height off the position: the skeleton is searched only for the one picked (LockAtLaunch)
+				const Vec3  to = V(a->GetPosition()) + Vec3{ 0.0f, 0.0f, 0.7f * a->GetHeight() } - a_from;
 				const float d = Core::Length(to);
 				if (!(d > 1.0f) || d > a_cfg.lockRange) {
 					continue;
@@ -126,6 +129,7 @@ namespace Crossfire
 
 	void FindTdm()
 	{
+		gMainThread = std::this_thread::get_id();  // called at kPostLoad, on the main thread
 		gTdm = static_cast<TDM_API::IVTDM1*>(TDM_API::RequestPluginAPI(TDM_API::InterfaceVersion::V1));
 		SKSE::log::info("auto lock: True Directional Movement {}", gTdm ? "found - its locked target aims your bolts" : "not loaded");
 	}
@@ -162,10 +166,14 @@ namespace Crossfire
 			return false;
 		}
 		const auto& rd = a_p->GetProjectileRuntimeData();
-		const Vec3  from = V(a_p->GetPosition());
-		const Vec3  dir = Core::UnitOf(V(rd.linearVelocity));
-		auto*       target = TargetFor(a_shooter, from, dir, a_cfg);
-		const auto  aim = AimPointOf(target);
+		// at launch only: a bolt first seen further out (it flew into range, or was in flight at a load) keeps its way
+		if (!(rd.distanceMoved < kLaunchReach)) {
+			return false;
+		}
+		const Vec3 from = V(a_p->GetPosition());
+		const Vec3 dir = Core::UnitOf(V(rd.linearVelocity));
+		auto*      target = TargetFor(a_shooter, from, dir, a_cfg);
+		const auto aim = AimPointOf(target);
 		if (!aim) {
 			return false;
 		}
@@ -180,6 +188,12 @@ namespace Crossfire
 
 	void LockBeam(RE::Projectile* a_p)
 	{
+		if (std::this_thread::get_id() != gMainThread) {
+			if (!gToldOffThread.exchange(true)) {
+				SKSE::log::info("auto lock: a lightning bolt picked its target off the main thread - such bolts are not aimed");
+			}
+			return;
+		}
 		const auto& cfg = Live();
 		if (!a_p || !cfg.enabled) {
 			return;
@@ -198,8 +212,8 @@ namespace Crossfire
 		const Vec3 dir = Core::DirectionFromAngles(a_p->data.angle.x, a_p->data.angle.z);
 		const auto aim = AimPointOf(TargetFor(shooter, from, dir, cfg));
 		const auto way = aim ? Core::LockDirection(from, dir, *aim, cfg.lockCone * kRadians, cfg.lockRange) : std::nullopt;
-		if (!way) {
-			return;
+		if (!way || Core::Dot(Core::UnitOf(dir), *way) > kAimedAlready) {
+			return;  // nothing to lock onto, or already aimed by an earlier pick of the same bolt
 		}
 		const auto angles = Core::AnglesFromDirection(*way);
 		a_p->data.angle.x = angles.pitch;

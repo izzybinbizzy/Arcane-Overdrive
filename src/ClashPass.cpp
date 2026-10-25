@@ -175,7 +175,8 @@ namespace Crossfire
 				float               bestDistance = a_cfg.steerRange;
 				for (std::size_t j = 0; j < gEntries.size(); ++j) {
 					const auto& b = gEntries[j];
-					if (j == i || b.killed || b.shooter == a.shooter) {
+					// other bolts only: a ghost line has no spell left, and spray particles / held beams are not steered into
+					if (j == i || b.killed || b.ghost || b.info.stream != Core::Stream::kNone || b.shooter == a.shooter) {
 						continue;
 					}
 					const Core::Shooters s{ a.shooter, b.shooter, a.player, b.player, a.actor != nullptr, b.actor != nullptr };
@@ -491,8 +492,8 @@ namespace Crossfire
 				{
 					if (info.kind == Core::Kind::kStream) {
 						// a held spray (Flames, Frostbite, a breath) is ONE long-lived projectile that sits at the caster's hand
-						// and turns with the aim - measured in game, 2026-10-01: a single Flames projectile lived 19 s and moved
-						// only as its caster did. As a ball at the hand it met nothing: two casters' streams never touched, so no
+						// and turns with the aim (measured: one Flames projectile lived 19 s and moved only as its caster
+						// did). As a ball at the hand it met nothing: two casters' streams never touched, so no
 						// struggle ever began, and "has hit something" or "is not moving" (the tests below, right for a missile)
 						// dropped it exactly while it was burning its target. Its body is the stream itself: from the hand
 						// along its aim for its reach, ending where it hits, like a held beam.

@@ -276,8 +276,8 @@ namespace Crossfire
 			if (!a_cfg.struggle.lockBursts) {
 				return;
 			}
-			// BOTH spells burst where they meet (his ask 2026-10-07: "a visual overload of fx depending on what the spells
-			// are") - fire against frost shows the fire burst AND the frost burst; each side keeps its own rate limit
+			// BOTH spells burst where they meet - fire against frost shows the fire burst AND the frost burst; each side keeps
+			// its own rate limit
 			std::uint64_t key = a_key;
 			for (const auto who : { a_first, a_second }) {
 				if (const auto* s = AnyStream(who)) {
@@ -545,8 +545,8 @@ namespace Crossfire
 				for (const auto i : it->second) {
 					const auto& s = gStreams[i];
 					// a spray (Flames, Frostbite, a breath) is ONE long-lived FlameProjectile at the hand that reaches out to
-					// its range (measured 2026-10-01), so the particle test below never found it past the front and the
-					// foe's spray still burned him through a lock (his report 2026-10-07). It is cut at the front like a beam.
+					// its range, so the particle test below never found it past the front and the foe's spray still burned
+					// through a lock. It is cut at the front like a beam.
 					if (s.info->stream == Core::Stream::kBeam || s.projectile->GetFormType() == RE::FormType::ProjectileFlame) {
 						if (!a_cfg.struggle.beamsStop) {
 							continue;
@@ -560,8 +560,8 @@ namespace Crossfire
 						const float cut = Core::BeamCut(a_front, s.now, s.dir, h->second.range0);
 						if (std::isfinite(cut) && cut > 0.0f) {
 							rd.range = cut;
-							// MEASURED 2026-10-07 20:49 (two AI mages, Flames vs Frostbite, locked 9.9 s): both kept losing
-							// health through the whole lock - a FlameProjectile does not honour a range written after launch.
+							// measured with two AI mages locked 9.9 s: both kept losing health through the whole lock - a
+							// FlameProjectile does not honour a range written after launch.
 							// Its hits are dropped past the cut instead (FlameAddImpact, main.cpp's hook)
 							if (s.projectile->GetFormType() == RE::FormType::ProjectileFlame) {
 								std::scoped_lock lock(gFlameCutLock);
