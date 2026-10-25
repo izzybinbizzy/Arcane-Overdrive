@@ -2,9 +2,8 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The two bars as add-on bars for Reticle Arcs (his answer: "use reticle arcs"; the author's yes: "build around his mod
-// using his api but don't add or change any code. just utilize the resources he provides. color will be added when he
-// releases that part."). Only Reticle Arcs' published interface is used - ReticleArcsAPI.h, Reticle Arcs by Chiktabba
+// The two bars as add-on bars for Reticle Arcs, as its author allows: an add-on through its API, none of its code changed
+// or copied in; per-bar color waits for the author's release of it. Only Reticle Arcs' published interface is used - ReticleArcsAPI.h, Reticle Arcs by Chiktabba
 // (https://codeberg.org/chiktabba/ReticleArcs), MIT, copied unchanged; Reticle Arcs draws the bars in the player's own look.
 //   the Overdrive bar   the charge; a rim when it is full and the gate is open, the warning colour while the gate holds a
 //                       full bar back; then Overdrive counting down with an alarm, and the burnout draining

@@ -411,6 +411,19 @@ namespace
 		CHECK(Near(p.Charge(per), 8.0f));  // the bar shows the last school's
 		CHECK(Near(p.HeatNow(), 72.0f));   // six casts' heat, one bar
 		CHECK(Near(p.Bonus(per), 1.08f));  // Hot, whatever the school
+
+		// a full school's bar is ready only while it is the one shown: never READY over another school's partly filled bar
+		Tuning perKey = per;
+		perKey.mode = OverdriveMode::kKey;
+		perKey.heatGate = false;
+		Meter q;
+		q.SetCharge(perKey, 0.0f);
+		q.Cast(perKey, School::kDestruction, 50.0f);
+		q.SetCharge(perKey, 100.0f);
+		CHECK(q.Ready(perKey));
+		q.Cast(perKey, School::kAlteration, 50.0f);
+		CHECK(!q.Ready(perKey) && q.PressKey(perKey) == Release::kNotReady);
+		CHECK(q.Now() == Meter::State::kBuilding);
 	}
 
 	void Overdrive()
@@ -946,7 +959,7 @@ namespace
 		CHECK(Near(Overload::Power(Phase::kBurnout, 1.0f, 1.0f, 1.0f), 1.0f));
 		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 0.0f), 1.0f));   // growth off: never bigger
 		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 50.0f), 3.0f));  // at most triple
-		// the burnout dip (his answer 2026-10-18, (c)): down at the start, whole again at the end, rising the whole way
+		// the burnout dip: down at the start, whole again at the end, rising the whole way
 		CHECK(Near(Overload::BurnoutDip(1.0f), Overload::kDipFloor));
 		CHECK(Near(Overload::BurnoutDip(0.0f), 1.0f));
 		CHECK(Near(Overload::BurnoutDip(0.5f), (1.0f + Overload::kDipFloor) / 2.0f));

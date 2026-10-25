@@ -201,8 +201,8 @@ namespace Plugin
 		const bool  misfire = a_s.enabled && a_v.misfire > 0.0f;
 		const bool  sputter = misfire || (a_s.enabled && a_s.burnoutFlicker && phase == Overload::Phase::kBurnout);
 		const float flicker = misfire ? a_v.misfire : left;
-		// the burnout dips the hand lights and brings them back (his answer 2026-10-18, checklist 28 (c)) - a hand-light
-		// change, so behind Light growth like the stages' growth (Hands.cpp)
+		// the burnout dips the hand lights and brings them back - a hand-light change, so behind Light growth like the stages'
+		// growth (Hands.cpp)
 		const float dip = a_s.lightGrowth && phase == Overload::Phase::kBurnout ? Overload::BurnoutDip(left) : 1.0f;
 		std::size_t arts = 0, projectiles = 0, out = 0;
 		if (player && a_s.enabled) {

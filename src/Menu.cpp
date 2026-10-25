@@ -331,7 +331,7 @@ namespace Plugin
 				const auto fc = FrameCostNow();
 				ImGuiMCP::TextDisabled("this mod a frame: game thread %.3f ms (most %.3f), the bars %.3f ms (most %.3f), the bars on the GPU %s", fc.usAvg / 1000.0f,
 					fc.usMax / 1000.0f, ls.drawUsAvg / 1000.0f, ls.drawUsMax / 1000.0f, ls.gpuUs >= 0.0f ? std::format("{:.4f} ms", ls.gpuUs / 1000.0f).c_str() : "(not timed)");
-				static bool clock = false;
+				bool clock = ls.gpuClock;
 				if (ImGuiMCP::Checkbox("Time the bars on the GPU", &clock)) {
 					BenchGpuClock(clock);
 				}

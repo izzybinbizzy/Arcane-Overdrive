@@ -2,8 +2,7 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The bars on the HUD, the high-res ones only (his answer: "remove the shitty bars there will only be high res bars"): the
-// Overdrive bar and, right above it, the thin Heat bar, each ONE quad painted by BarShader.h - dark glass in a dark iron
+// The bars on the HUD: the Overdrive bar and, right above it, the thin Heat bar, each ONE quad painted by BarShader.h - dark glass in a dark iron
 // frame, the spell's own kind of effect inside, nothing can leave the frame and it stays sharp at any size. The shader is
 // compiled once on a worker thread (a first compile can stall a frame) and bound for each quad by an ImGui draw callback that
 // carries that quad's own numbers. Until it is ready - or on a PC without the compiler - a plain bar stands in, so the HUD
@@ -114,6 +113,7 @@ namespace Plugin
 		std::atomic<std::uint32_t>   gShaderCalls{ 0 };
 		// each quad's numbers, read by its own bind callback when ImGui renders the frame (after DrawBars has returned)
 		BarShaderConstants gBar{}, gStrip{};
+		constexpr double   kClockWrap = 2048.0;  // s: the clocks start over about every half hour - one jump of the pattern
 
 		void CompileShader(REX::W32::ID3D11Device* a_device)
 		{
@@ -255,6 +255,21 @@ namespace Plugin
 			ctx->End(gClockRunning->end);
 			ctx->End(gClockRunning->disjoint);
 			gClockRunning->pending = true;
+			gClockRunning = nullptr;
+		}
+
+		// the clock switched off: its queries are let go (render thread, where they are used), and a reading never comes back stale
+		void DropClocks()
+		{
+			for (auto& c : gClocks) {
+				for (auto* q : { &c.disjoint, &c.begin, &c.end }) {
+					if (*q) {
+						(*q)->Release();
+						*q = nullptr;
+					}
+				}
+				c.pending = false;
+			}
 			gClockRunning = nullptr;
 		}
 
@@ -410,7 +425,7 @@ namespace Plugin
 		{
 			a_c = { { a_qw, a_qh, a_frame, a_radius }, { a_t, a_fill, a_heat, a_power }, { static_cast<float>(static_cast<int>(a_look)), a_phase, a_fade, a_sputter },
 				{ a_ramp.core.r, a_ramp.core.g, a_ramp.core.b, 0.0f }, { a_ramp.mid.r, a_ramp.mid.g, a_ramp.mid.b, 0.0f },
-				{ a_ramp.deep.r, a_ramp.deep.g, a_ramp.deep.b, 0.0f } };
+				{ a_ramp.deep.r, a_ramp.deep.g, a_ramp.deep.b, 0.0f }, { a_t, 0.0f, 0.0f, 0.0f } };
 		}
 	}
 
@@ -424,6 +439,8 @@ namespace Plugin
 		}
 		if (gGpuWanted.load(std::memory_order_relaxed)) {
 			ReadClocks();
+		} else if (gClocks[0].disjoint) {
+			DropClocks();
 		}
 		if (gShaderState.load(std::memory_order_acquire) == 0 && fn.image && fn.callback) {
 			const auto* imgui = Backend();
@@ -455,7 +472,15 @@ namespace Plugin
 		const float power = Overload::Power(phase, charge, left, 1.0f);  // the bar itself always doubles in Overdrive
 		const float drive = overdrive ? 1.0f : burnout ? 0.25f :
 		                                                 heat;
-		const float t = static_cast<float>(fn.time());
+		// the shader's two clocks, kept small (a large time loses the float precision the noise needs): the plain clock, and the
+		// flow clock every motion runs on, advanced power times as fast so a change of power never jumps the motion
+		static double plainClock = 0.0, flowClock = 0.0, lastTime = -1.0;
+		const double  now = fn.time();
+		const double  step = lastTime < 0.0 ? 0.0 : std::clamp(now - lastTime, 0.0, 0.25);
+		lastTime = now;
+		plainClock = std::fmod(plainClock + step, kClockWrap);
+		flowClock = std::fmod(flowClock + step * power, kClockWrap);
+		const float t = static_cast<float>(plainClock);
 		const float alpha = std::clamp(a_alpha, 0.0f, 1.0f);
 		const float sputter = burnout && a_s.burnoutFlicker && !Overload::Shows(t, left, 0xBA5Eu) ? 0.15f : 1.0f;
 		const bool  strip = !burnout && a_v.heat > 0.5f;
@@ -491,6 +516,7 @@ namespace Plugin
 			const float phaseNow = overdrive ? 1.0f : burnout ? 2.0f :
 			                                                    0.0f;
 			Fill(gBar, qw, qh, 3.0f * k, 6.0f * k, t, fill, drive, power, ShaderLook(look), phaseNow, alpha, sputter, ramp);
+			gBar.flow[0] = static_cast<float>(flowClock);
 			const bool clock = gGpuWanted.load(std::memory_order_relaxed);
 			if (clock) {
 				fn.callback(a_dl, ClockStart, nullptr);
@@ -550,6 +576,7 @@ namespace Plugin
 		s.shaderMs = gShaderMs.load();
 		s.shaderCalls = gShaderCalls.load();
 		s.gpuUs = gGpuUs.load();
+		s.gpuClock = gGpuWanted.load();
 		return s;
 	}
 

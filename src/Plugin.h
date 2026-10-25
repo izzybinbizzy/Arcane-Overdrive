@@ -32,7 +32,9 @@ namespace Plugin
 		bool             held{ false };  // a concentration spell
 		int              element{ 0 };   // 0 none, 1 fire, 2 frost, 3 shock: the hand glow's color
 	};
-	[[nodiscard]] SpellInfo Read(const RE::MagicItem* a_item);
+	[[nodiscard]] SpellInfo     Read(const RE::MagicItem* a_item);
+	void                        NewReadFrame();  // main thread, each frame: Read's kept answers are from this frame on read afresh
+	[[nodiscard]] std::uint32_t ReadFrameNow();  // the frames counted so far (what is kept is kept by it)
 	// whether this effect's magnitude is boosted, by the Boost setting (damage only, or every hostile effect)
 	[[nodiscard]] bool Boosted(const RE::EffectSetting* a_effect, Heat::Boost a_boost);
 
@@ -107,6 +109,7 @@ namespace Plugin
 		float         shaderMs{ 0.0f };                      // its compile time
 		std::uint32_t shaderCalls{ 0 };                      // its draws so far
 		float         gpuUs{ -1.0f };                        // the bars' GPU time a frame, microseconds (-1 until the clock is on)
+		bool          gpuClock{ false };                     // the GPU clock is on (DevBench set=gpu, the Debug page)
 	};
 	[[nodiscard]] LookStats LookStatsNow();
 	void                    BenchForceLook(int a_look);  // the Debug page and DevBench: show this look whatever the spell (-1: the spell's own)

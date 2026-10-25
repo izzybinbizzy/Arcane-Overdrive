@@ -2,8 +2,7 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The spell's own color, for the bars (his order: "the effects need to mirror or at the very least be influenced by their in
-// game spells and not be some random interpretation"). For the spell the bars show, the color the game itself draws it with,
+// The spell's own color, for the bars, so a bar follows the spell it shows. For the spell the bars show, the color the game itself draws it with,
 // read from the player's own load order - a VFX replacer's art included: the effect's casting light, else its projectile's
 // light, else the base color of the first effect-shader block in its models (the projectile, the casting art, the hit art)
 // that is not colored through a palette. The models come through the game's model cache (BSModelDB::Demand - the spell in

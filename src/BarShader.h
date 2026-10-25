@@ -2,14 +2,9 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The bars' pixel shader (HLSL), compiled once at run time by HudBars.cpp. It is the whole look of the HUD - his answers:
-// "theres a clear red line through all of them and they don't really pop that much. they also all spill out of the bar"
-// (so the bar, its frame and the effect are painted by one quad, the effect cut by the frame's shape), then "adapt all of the
-// spell types to match this design with different effects per. the frost could use a redesign, i really don't want anything
-// looking like a bar such as frost. and make the healing more gold and bright", then "remove the shitty bars there will
-// only be high res bars", then "they need to be skyrim themed and magic themed so particles and flowing magicka not science
-// projects and scifi" and "this needs to be as performance concious as you can make it". Off the game it is drawn by the bar
-// bench in Arcane's HUD work folder (bar bench.py; bar cost.py times every look on the GPU).
+// The bars' pixel shader (HLSL), compiled once at run time by HudBars.cpp: the whole look of the HUD. The bar, its frame and
+// the effect are painted by one quad and the effect is cut by the frame's shape, so nothing spills out. Off the game it is
+// drawn by the bar bench in Arcane's HUD work folder (bar bench.py; bar cost.py times every look on the GPU).
 
 #pragma once
 
@@ -26,8 +21,9 @@ namespace Plugin
 		float core[4];   // the spell's hottest color; w: the Heat strip's band bottom 0..1
 		float mid[4];    // its body color; w: the red line 0..1
 		float deep[4];   // its deepest color; w: 1 when the Heat gate is on
+		float flow[4];   // x: the flow clock (s) - it runs power times as fast, so a change of power never jumps the motion
 	};
-	static_assert(sizeof(BarShaderConstants) == 96);
+	static_assert(sizeof(BarShaderConstants) == 112);
 
 	// the looks the shader draws (state.x); SpellLook's fourteen kinds map onto them in HudBars.cpp
 	enum class BarLook : int
@@ -69,6 +65,7 @@ cbuffer Bar : register(b0)
 	float4 gCore;   // the spell's hottest color (rgb); w: the Heat strip's band bottom 0..1
 	float4 gMid;    // its body color; w: the red line 0..1
 	float4 gDeep;   // its deepest color; w: 1 when the Heat gate is on
+	float4 gFlow;   // x: the flow clock (s): every motion runs on it, so it speeds up with the power without ever jumping
 };
 
 struct PS_INPUT
@@ -78,18 +75,28 @@ struct PS_INPUT
 	float2 uv : TEXCOORD0;
 };
 
-// ---- noise
+// ---- noise: integer hashes of the lattice cell, exact at any coordinate (a float hash of a large coordinate loses its
+// precision and the noise turns blocky after a long session)
+uint HashU(uint2 v)
+{
+	uint h = v.x * 0x27d4eb2du ^ (v.y + 0x9e3779b9u) * 0x85ebca6bu;
+	h ^= h >> 15;
+	h *= 0x2c1b3c6du;
+	h ^= h >> 12;
+	h *= 0x297a2d39u;
+	h ^= h >> 15;
+	return h;
+}
+
 float Hash21(float2 p)
 {
-	p = frac(p * float2(123.34, 456.21));
-	p += dot(p, p + 45.32);
-	return frac(p.x * p.y);
+	return HashU(asuint(int2(floor(p)))) * (1.0 / 4294967296.0);
 }
 
 float2 Hash22(float2 p)
 {
-	const float h = Hash21(p);
-	return float2(h, Hash21(p + h + 17.17));
+	const uint2 i = asuint(int2(floor(p)));
+	return float2(HashU(i), HashU(i + uint2(0x68e31da4u, 0xb5297a4du))) * (1.0 / 4294967296.0);
 }
 
 float ValueNoise(float2 p)
@@ -131,14 +138,14 @@ float RoundBox(float2 p, float2 halfSize, float r)
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-// ---- particles: at most one per cell of a grid that moves at `vel` cells a second; the particle wanders a little in its
-// cell. Returns its offset from this pixel in px (xy), its own random number (z), 1 when the cell holds one (w)
+// ---- particles: at most one per cell of a grid that moves at `vel` cells a second of `t` (the flow clock); the particle
+// wanders a little in its cell. Returns its offset from this pixel in px (xy), its own random number (z), 1 when the cell holds one (w)
 float4 Field(float2 p, float2 cell, float2 vel, float chance, float t, float seed)
 {
 	const float2 g = p / cell - vel * t;
 	const float2 id = floor(g);
 	const float2 r = Hash22(id + seed);
-	const float2 spot = 0.3 + 0.4 * Hash22(id + seed + 9.1) + 0.1 * sin(t * (1.1 + r.y * 1.7) + r * 23.0);
+	const float2 spot = 0.3 + 0.4 * Hash22(id.yx + seed * 3.0 + 101.0) + 0.1 * sin(t * (1.1 + r.y * 1.7) + r * 23.0);
 	return float4((frac(g) - spot) * cell, r.y, r.x < chance ? 1.0 : 0.0);
 }
 
@@ -177,23 +184,24 @@ float Front(float head, float h)
 }
 
 // ---- the looks: each returns the light of the effect at q (px, y up from the channel's floor), w x h the channel, head =
-// px past the fill's front (negative behind it). px = h / 16: particle sizes follow the bar size
+// px past the fill's front (negative behind it). px = h / 16: particle sizes follow the bar size. t is the plain clock (for
+// flicker); every motion runs on gFlow.x
 
 // Flames: tongues of fire leaning toward the head as if fanned by the cast, a bed of coals, embers rising and drifting
 float3 Fire(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float  speed = 1.4 * power;
+	const float  run = gFlow.x * 1.4;
 	const float  top = lerp(0.5, 1.15, heat) * (0.85 + 0.15 * power);
-	const float2 warp = float2(ValueNoise(float2(s * 1.1 - t * 0.6, v * 1.3 - t * speed * 0.9)), ValueNoise(float2(s * 1.1 + 4.7, v * 1.3 - t * speed * 0.8))) - 0.5;
-	const float  n = Fractal(float2(s * 1.5 - v * 0.6 - t * 0.35, v * 0.9 - t * speed) + warp * float2(1.1, 0.7), 4);
+	const float2 warp = float2(ValueNoise(float2(s * 1.1 - t * 0.6, v * 1.3 - run * 0.9)), ValueNoise(float2(s * 1.1 + 4.7, v * 1.3 - run * 0.8))) - 0.5;
+	const float  n = Fractal(float2(s * 1.5 - v * 0.6 - t * 0.35, v * 0.9 - run) + warp * float2(1.1, 0.7), 4);
 	float        i = saturate(n * 1.8 - v / top * 1.1 + 0.12);
 	i = i * i * (3.0 - 2.0 * i);
 	const float coal = saturate(1.0 - v * 3.2) * (0.4 + 0.35 * ValueNoise(float2(s * 3.0, t * 0.9)));
 	const float hot = power - 1.0;
 	float3      light = Ramp(saturate(i * (0.86 + 0.3 * hot))) * pow(i, 1.3 - 0.4 * hot) + Ramp(0.32 + 0.3 * coal + 0.3 * hot) * coal * 0.5;
 	light *= (1.0 + 0.3 * hot) * (0.9 + 0.15 * Front(head, h));
-	const float4 e = Field(q, float2(h * 0.55, h * 0.6), float2(0.35, 1.5) * power, 0.22 * (0.4 + heat) * power, t, 3.0);
+	const float4 e = Field(q, float2(h * 0.55, h * 0.6), float2(0.35, 1.5), 0.22 * (0.4 + heat) * power, gFlow.x, 3.0);
 	light += Ramp(0.92) * Mote(e, 1.1 * px * (0.9 + 0.3 * power), float2(0.24, 0.97), 1.7) * saturate(1.2 - v) * (0.7 + 0.5 * sin(t * 13.0 + e.z * 50.0)) * 1.3;
 	return light;
 }
@@ -202,11 +210,11 @@ float3 Fire(float2 q, float w, float h, float t, float heat, float power, float 
 float3 Frost(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float  wind = 1.6 * power;
-	const float  gust = smoothstep(0.15, 0.8, ValueNoise(float2(s * 0.35 - t * wind * 0.5, t * 0.2)));
-	const float2 curl = Swirl(float2(s * 0.7 - t * wind * 0.3, v * 1.6), t);
+	const float  wind = gFlow.x * 1.6;
+	const float  gust = smoothstep(0.15, 0.8, ValueNoise(float2(s * 0.35 - wind * 0.5, t * 0.2)));
+	const float2 curl = Swirl(float2(s * 0.7 - wind * 0.3, v * 1.6), t);
 	// the breath: stretched along the wind so it streams, folded by the curl
-	const float  n = Fractal(float2(s * 0.75 - t * wind, v * 2.4) + curl * float2(1.0, 0.5), 4);
+	const float  n = Fractal(float2(s * 0.75 - wind, v * 2.4) + curl * float2(1.0, 0.5), 4);
 	const float  mist = saturate(n * 1.8 - 0.5) * (0.45 + 0.55 * gust);
 	float3       light = Ramp(0.18) * 0.22 + Ramp(0.35 + 0.5 * mist) * mist * (0.75 + 0.45 * heat) + Ramp(0.85) * Wisps(n, 0.045) * gust * 0.3 * (0.5 + heat);
 	// rime: fine frost on the glass at the lid and the floor, creeping further in as the heat (the casting) climbs
@@ -214,8 +222,8 @@ float3 Frost(float2 q, float w, float h, float t, float heat, float power, float
 	const float rime = saturate(1.0 - lip / (0.08 + 0.14 * heat)) * Wisps(ValueNoise(float2(s * 5.0, lip * 12.0)), 0.25);
 	light += Ramp(0.75) * rime * 0.4;
 	// snow in the wind: a near layer (bigger, faster, streaked) and a far one; a few flakes glint
-	const float4 near = Field(q, float2(h * 0.7, h * 0.45), float2(3.6, -0.35) * power, 0.35 + 0.3 * heat, t, 1.0);
-	const float4 far = Field(q, float2(h * 0.4, h * 0.3), float2(2.2, 0.3) * power, 0.4 + 0.3 * heat, t, 7.0);
+	const float4 near = Field(q, float2(h * 0.7, h * 0.45), float2(3.6, -0.35), 0.35 + 0.3 * heat, gFlow.x, 1.0);
+	const float4 far = Field(q, float2(h * 0.4, h * 0.3), float2(2.2, 0.3), 0.4 + 0.3 * heat, gFlow.x, 7.0);
 	light += float3(0.88, 0.95, 1.0) * (Mote(near, 0.95 * px, float2(0.995, -0.1), 2.6) * (0.7 + 0.5 * near.z) + Mote(far, 0.65 * px, float2(0.99, 0.13), 2.0) * 0.55);
 	light += float3(0.92, 0.98, 1.0) * Twinkle(near, 0.85 * px, t) * step(0.75, near.z) * (0.6 + 0.8 * (power - 1.0));
 	return light * (0.92 + 0.2 * Front(head, h));
@@ -226,9 +234,8 @@ float3 Shock(float2 q, float w, float h, float t, float heat, float power, float
 {
 	const float s = q.x / h, v = q.y / h, px = h / 16.0;
 	const float span = max((q.x - head) / h, 1.0);  // the filled length, in bar heights
-	float3      light = Ramp(0.3) * ValueNoise(float2(s * 2.0 - t * 3.0 * power, v * 2.0 + t * 2.0)) * 0.3 * (0.5 + heat);
-	const float strikes = 9.0 + 6.0 * power;
-	const float tick = floor(t * strikes), age = frac(t * strikes);
+	float3      light = Ramp(0.3) * ValueNoise(float2(s * 2.0 - gFlow.x * 3.0, v * 2.0 + t * 2.0)) * 0.3 * (0.5 + heat);
+	const float tick = floor(gFlow.x * 12.0), age = frac(gFlow.x * 12.0);  // about 12 strikes a second, 24 in Overdrive
 	[unroll] for (int k = 0; k < 3; ++k) {
 		const float  seed = tick * 1.73 + k * 31.7;
 		const float2 r = Hash22(float2(seed, k + 0.5));
@@ -246,7 +253,7 @@ float3 Shock(float2 q, float w, float h, float t, float heat, float power, float
 		const float d = abs(v - y) * h / px;
 		light += (Ramp(1.0) * exp(-d * d / 0.45) * 1.3 * sqrt(ends) + Ramp(0.6) * 0.55 / (1.0 + d * d * 0.3) * ends) * (1.0 - age * 0.55);
 	}
-	const float4 sp = Field(q, float2(h * 0.5, h * 0.45), float2(2.6, 1.2) * power, 0.12 + 0.18 * heat, t, 5.0);
+	const float4 sp = Field(q, float2(h * 0.5, h * 0.45), float2(2.6, 1.2), 0.12 + 0.18 * heat, gFlow.x, 5.0);
 	light += Ramp(0.95) * Mote(sp, 0.8 * px, float2(0.9, 0.42), 2.6) * (0.5 + 0.5 * step(0.5, frac(t * 9.0 + sp.z))) * 1.4;
 	return light * (0.9 + 0.2 * Front(head, h));
 }
@@ -256,7 +263,7 @@ float3 Shock(float2 q, float w, float h, float t, float heat, float power, float
 float3 Essence(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float flow = t * 1.8 * power;
+	const float flow = gFlow.x * 1.8;
 	const float body = ValueNoise(float2(s * 1.4 - flow * 1.2, v * 2.5));
 	float3      light = Ramp(0.25 + 0.3 * body) * (0.2 + 0.3 * body) * (0.6 + 0.4 * heat);
 	const float wander = ValueNoise(float2(s * 0.6 - flow * 0.4, 3.7)) * 2.4;
@@ -269,7 +276,7 @@ float3 Essence(float2 q, float w, float h, float t, float heat, float power, flo
 		const float width = 0.7 + 1.3 * depth;
 		light += Ramp(0.5 + 0.42 * depth) * exp(-d * d / (width * width)) * (0.35 + 0.65 * depth) * (0.75 + 0.35 * heat);
 	}
-	const float4 m = Field(q, float2(h * 0.6, h * 0.5), float2(3.0, sin(t * 0.7) * 0.3) * power, 0.3 + 0.3 * heat, t, 2.0);
+	const float4 m = Field(q + float2(0.0, sin(t * 0.7) * h * 0.15), float2(h * 0.6, h * 0.5), float2(3.0, 0.0), 0.3 + 0.3 * heat, gFlow.x, 2.0);
 	light += Ramp(0.95) * Mote(m, 0.95 * px, float2(1.0, 0.0), 1.8);
 	return light * (0.9 + 0.2 * Front(head, h));
 }
@@ -278,12 +285,12 @@ float3 Essence(float2 q, float w, float h, float t, float heat, float power, flo
 float3 Healing(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float2 curl = Swirl(float2(s * 0.8, v * 1.4 - t * 0.5 * power), t * 0.7);
-	const float  n = Fractal(float2(s * 1.0 + t * 0.15, v * 1.3 - t * 0.55 * power) + curl, 3);
+	const float2 curl = Swirl(float2(s * 0.8, v * 1.4 - gFlow.x * 0.5), t * 0.7);
+	const float  n = Fractal(float2(s * 1.0 + t * 0.15, v * 1.3 - gFlow.x * 0.55) + curl, 3);
 	const float  well = 0.3 + 0.45 * exp(-v * 1.8);
 	const float  i = saturate(well * (0.75 + 0.35 * heat) * (0.55 + 0.9 * n) + 0.12 * Front(head, h));
 	float3       light = lerp(gDeep.rgb * 0.6, gMid.rgb, saturate(i * 1.25)) * i * 1.15 + gCore.rgb * pow(i, 3.0) * 0.45;
-	const float4 m = Field(q, float2(h * 0.85, h * 0.7), float2(0.15, 0.9) * power, 0.3 + 0.25 * heat, t, 4.0);
+	const float4 m = Field(q, float2(h * 0.85, h * 0.7), float2(0.15, 0.9), 0.3 + 0.25 * heat, gFlow.x, 4.0);
 	light += lerp(gMid.rgb, float3(1.0, 0.95, 0.75), 0.6) * Twinkle(m, 1.2 * px, t) * saturate(1.25 - v) * 1.2;
 	// Overdrive: a radiant swell rolling along the bar
 	const float roll = frac(t * 0.6) * (w / h + 2.0) - 1.0;
@@ -295,12 +302,12 @@ float3 Healing(float2 q, float w, float h, float t, float heat, float power, flo
 float3 Illusion(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float  sp = 0.35 * power;
-	const float2 curl = Swirl(float2(s * 0.8 - t * sp, v * 1.6), t * sp * 2.0) * 1.6;
-	const float  mist = Fractal(float2(s * 0.9 - t * sp * 0.5, v * 1.6) + curl, 4);
+	const float  drift = gFlow.x * 0.35;
+	const float2 curl = Swirl(float2(s * 0.8 - drift, v * 1.6), drift * 2.0) * 1.6;
+	const float  mist = Fractal(float2(s * 0.9 - drift * 0.5, v * 1.6) + curl, 4);
 	const float  i = saturate(smoothstep(0.28, 0.85, mist) * (0.85 + 0.45 * heat) + 0.1 * Front(head, h));
 	float3       light = Ramp(saturate(0.2 + 0.65 * i)) * i * 1.1;
-	const float4 g = Field(q, float2(h * 0.7, h * 0.6), float2(-0.25, 0.2) * power, 0.35 + 0.25 * heat, t, 6.0);
+	const float4 g = Field(q, float2(h * 0.7, h * 0.6), float2(-0.25, 0.2), 0.35 + 0.25 * heat, gFlow.x, 6.0);
 	light += Ramp(0.95) * Twinkle(g, 1.0 * px, t * 0.7) * 0.9;
 	return light;
 }
@@ -309,13 +316,13 @@ float3 Illusion(float2 q, float w, float h, float t, float heat, float power, fl
 float3 Conjuration(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float  pull = t * 1.1 * power;
+	const float  pull = gFlow.x * 1.1;
 	const float2 curl = Swirl(float2(s * 0.7 - pull * 0.4, v * 1.8), t * 0.8);
 	const float  smoke = Fractal(float2(s * 0.8 - pull, v * 2.2) + curl * float2(1.0, 0.6), 4);
 	const float  body = smoothstep(0.35, 0.8, smoke);
 	const float  rim = exp(-pow((smoke - 0.62) / 0.11, 2.0));  // each fold's bright edge, soft
 	float3       light = Ramp(0.12) * 0.4 + Ramp(0.4 + 0.25 * body) * body * (0.5 + 0.4 * heat) + Ramp(0.8) * rim * 0.3 * (0.5 + heat);
-	const float4 soul = Field(q, float2(h * 1.1, h * 0.55), float2(2.4, 0.0) * power, 0.25 + 0.25 * heat, t, 8.0);
+	const float4 soul = Field(q, float2(h * 1.1, h * 0.55), float2(2.4, 0.0), 0.25 + 0.25 * heat, gFlow.x, 8.0);
 	light += Ramp(0.97) * (Mote(soul, 1.1 * px, float2(1.0, 0.0), 1.0) + Mote(soul, 0.7 * px, float2(1.0, 0.0), 6.0) * 0.5);  // a soul-light and its tail
 	return light * (0.9 + 0.2 * Front(head, h));
 }
@@ -324,14 +331,14 @@ float3 Conjuration(float2 q, float w, float h, float t, float heat, float power,
 float3 Bound(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float speed = 1.1 * power;
-	const float n = Fractal(float2(s * 1.6 - t * 0.5, v * 1.0 - t * speed) + Swirl(float2(s * 0.8, v * 1.2 - t * speed * 0.5), t), 4);
+	const float run = gFlow.x * 1.1;
+	const float n = Fractal(float2(s * 1.6 - t * 0.5, v * 1.0 - run) + Swirl(float2(s * 0.8, v * 1.2 - run * 0.5), t), 4);
 	const float top = lerp(0.65, 1.2, heat);
 	const float body = saturate(n * 1.7 - v / top * 0.9 + 0.05);
 	const float rim = Wisps(n - v / top * 0.5, 0.06) * saturate(1.3 - v);
 	float3      light = Ramp(0.3 + 0.35 * body) * body * 0.9 + Ramp(0.9) * rim * (0.75 + 0.45 * heat);
 	light += Ramp(0.2) * 0.25;  // the ether the blade is drawn from
-	const float4 g = Field(q, float2(h * 0.7, h * 0.6), float2(0.6, 0.9) * power, 0.3 + 0.25 * heat, t, 9.0);
+	const float4 g = Field(q, float2(h * 0.7, h * 0.6), float2(0.6, 0.9), 0.3 + 0.25 * heat, gFlow.x, 9.0);
 	light += Ramp(0.97) * Twinkle(g, 0.95 * px, t) * 1.1;
 	return light * (0.9 + 0.25 * Front(head, h));
 }
@@ -340,14 +347,14 @@ float3 Bound(float2 q, float w, float h, float t, float heat, float power, float
 float3 Alteration(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float2 curl = Swirl(float2(s * 1.1, v * 1.6), t * 0.6 * power) * 1.3;
-	const float  haze = Fractal(float2(s * 0.9 - t * 0.25 * power, v * 1.5) + curl, 3);
-	const float  bend = 0.8 + 0.2 * sin(t * 3.0 * power + haze * 9.0);  // the air bending, flickering through the haze
+	const float2 curl = Swirl(float2(s * 1.1, v * 1.6), gFlow.x * 0.6) * 1.3;
+	const float  haze = Fractal(float2(s * 0.9 - gFlow.x * 0.25, v * 1.5) + curl, 3);
+	const float  bend = 0.8 + 0.2 * sin(gFlow.x * 3.0 + haze * 9.0);  // the air bending, flickering through the haze
 	float3       light = Ramp(0.38 + 0.45 * haze) * (0.3 + 0.9 * smoothstep(0.25, 0.8, haze)) * (0.75 + 0.4 * heat) * bend;
-	// the dust: two layers turning against each other
-	const float2 eddy = float2(cos(t * 0.5), sin(t * 0.5)) * 0.6;
-	const float4 a = Field(q, float2(h * 0.6, h * 0.5), float2(0.4, 0.0) * power + eddy, 0.35 + 0.25 * heat, t, 10.0);
-	const float4 b = Field(q, float2(h * 0.4, h * 0.35), float2(-0.3, 0.1) * power - eddy, 0.3 + 0.25 * heat, t, 11.0);
+	// the dust: two layers drifting against each other, turning in a slow eddy (an offset, so it never speeds up)
+	const float2 eddy = float2(cos(t * 0.5), sin(t * 0.5)) * h * 0.35;
+	const float4 a = Field(q + eddy, float2(h * 0.6, h * 0.5), float2(0.4, 0.0), 0.35 + 0.25 * heat, gFlow.x, 10.0);
+	const float4 b = Field(q - eddy, float2(h * 0.4, h * 0.35), float2(-0.3, 0.1), 0.3 + 0.25 * heat, gFlow.x, 11.0);
 	light += Ramp(0.95) * (Twinkle(a, 1.0 * px, t) * 1.0 + Mote(b, 0.7 * px, float2(1.0, 0.0), 1.0) * 0.6);
 	return light * (0.9 + 0.25 * Front(head, h));
 }
@@ -356,13 +363,13 @@ float3 Alteration(float2 q, float w, float h, float t, float heat, float power, 
 float3 Sun(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float2 curl = Swirl(float2(s * 0.9 - t * 0.3 * power, v * 1.4 - t * 0.6 * power), t);
-	const float  shimmer = Fractal(float2(s * 1.2 - t * 0.35 * power, v * 1.5 - t * 0.8 * power) + curl, 3);
+	const float2 curl = Swirl(float2(s * 0.9 - gFlow.x * 0.3, v * 1.4 - gFlow.x * 0.6), t);
+	const float  shimmer = Fractal(float2(s * 1.2 - gFlow.x * 0.35, v * 1.5 - gFlow.x * 0.8) + curl, 3);
 	const float  core = exp(-pow((v - 0.45) * 2.2, 2.0));
 	const float  i = saturate((0.3 + 0.4 * core) * (0.35 + 1.2 * shimmer) * (0.75 + 0.35 * heat) + 0.1 * Front(head, h));
 	float3       light = lerp(gDeep.rgb * 0.8, gMid.rgb, saturate(i * 1.4)) * i * 1.05 + gCore.rgb * pow(i, 4.0) * 0.45;
 	// sun-motes flaring as they drift up: a soft halo round each and a long four-pointed glint
-	const float4 f = Field(q, float2(h * 1.0, h * 0.8), float2(0.45, 0.4) * power, 0.35 + 0.2 * heat, t, 12.0);
+	const float4 f = Field(q, float2(h * 1.0, h * 0.8), float2(0.45, 0.4), 0.35 + 0.2 * heat, gFlow.x, 12.0);
 	light += gMid.rgb * Mote(f, 2.6 * px, float2(1.0, 0.0), 1.0) * 0.35 + float3(1.0, 0.96, 0.82) * Twinkle(f, 1.3 * px, t) * 1.2;
 	return light;
 }
@@ -371,13 +378,13 @@ float3 Sun(float2 q, float w, float h, float t, float heat, float power, float h
 float3 Poison(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float  slow = 0.5 * power;
-	const float2 curl = Swirl(float2(s * 0.6 - t * slow * 0.3, v * 1.5), t * slow) * 1.4;
-	const float  fume = Fractal(float2(s * 1.0 - t * slow * 0.6, v * 1.6 + t * slow * 0.3) + curl, 4);
+	const float  roll = gFlow.x * 0.5;
+	const float2 curl = Swirl(float2(s * 0.6 - roll * 0.3, v * 1.5), roll) * 1.4;
+	const float  fume = Fractal(float2(s * 1.0 - roll * 0.6, v * 1.6 + roll * 0.3) + curl, 4);
 	const float  roil = ValueNoise(float2(s * 0.5 + t * 0.1, v * 0.8 - t * 0.15));
 	const float  i = smoothstep(0.25, 0.8, fume) * (0.85 + 0.4 * heat) * (0.5 + 0.65 * roil);
 	float3       light = Ramp(saturate(0.2 + 0.65 * i)) * i * 1.1;
-	const float4 sp = Field(q, float2(h * 0.6, h * 0.55), float2(0.5, 0.3) * power, 0.3 + 0.25 * heat, t, 13.0);
+	const float4 sp = Field(q, float2(h * 0.6, h * 0.55), float2(0.5, 0.3), 0.3 + 0.25 * heat, gFlow.x, 13.0);
 	light += Ramp(0.9) * Mote(sp, 0.9 * px, float2(1.0, 0.0), 1.0) * (0.6 + 0.4 * sin(t * 2.0 + sp.z * 30.0));
 	return light * (0.9 + 0.2 * Front(head, h));
 }
@@ -386,13 +393,13 @@ float3 Poison(float2 q, float w, float h, float t, float heat, float power, floa
 float3 Generic(float2 q, float w, float h, float t, float heat, float power, float head)
 {
 	const float  s = q.x / h, v = q.y / h, px = h / 16.0;
-	const float2 curl = Swirl(float2(s * 0.8 - t * 0.6 * power, v * 1.8), t);
+	const float2 curl = Swirl(float2(s * 0.8 - gFlow.x * 0.6, v * 1.8), t);
 	// stretched along the bar, so the bright threads run with the flow instead of closing into rings
-	const float  n = Fractal(float2(s * 0.65 - t * 0.9 * power, v * 2.4) + curl * float2(1.0, 0.5), 4);
+	const float  n = Fractal(float2(s * 0.65 - gFlow.x * 0.9, v * 2.4) + curl * float2(1.0, 0.5), 4);
 	const float  body = smoothstep(0.3, 0.8, n) * (1.0 - abs(v - 0.5) * 1.1);
 	const float  threads = exp(-pow((n - 0.6) / 0.06, 2.0));
 	float3       light = Ramp(saturate(0.25 + 0.5 * body)) * body * (0.8 + 0.4 * heat) + Ramp(0.88) * threads * 0.35 * (0.6 + 0.5 * heat);
-	const float4 m = Field(q, float2(h * 0.6, h * 0.5), float2(2.2, 0.1) * power, 0.3 + 0.25 * heat, t, 14.0);
+	const float4 m = Field(q, float2(h * 0.6, h * 0.5), float2(2.2, 0.1), 0.3 + 0.25 * heat, gFlow.x, 14.0);
 	light += Ramp(0.95) * Mote(m, 1.0 * px, float2(1.0, 0.0), 1.6) * 0.9;
 	return light * (0.9 + 0.2 * Front(head, h));
 }

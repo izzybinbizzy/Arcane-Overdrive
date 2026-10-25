@@ -142,27 +142,38 @@ namespace Plugin
 		}
 	}
 
+	namespace
+	{
+		std::atomic<std::uint32_t> gReadFrame{ 0 };
+	}
+
+	void NewReadFrame() { gReadFrame.fetch_add(1, std::memory_order_relaxed); }
+
+	std::uint32_t ReadFrameNow() { return gReadFrame.load(std::memory_order_relaxed); }
+
 	SpellInfo Read(const RE::MagicItem* a_item)
 	{
 		// the same few spells are read many times a frame (both hands, the held spell, the hand lights): the last four read on
-		// this thread are kept - a spell's record does not change while the game runs
+		// this thread are kept for the frame they were read in, so a spell another mod changes is read afresh the next frame
 		struct Kept
 		{
 			const RE::MagicItem* item{ nullptr };
 			RE::FormID           id{ 0 };
+			std::uint32_t        frame{ 0 };
 			SpellInfo            info;
 		};
 		thread_local std::array<Kept, 4> kept{};
 		thread_local std::size_t         next = 0;
 		const RE::FormID                 id = a_item ? a_item->GetFormID() : 0;
+		const std::uint32_t              frame = gReadFrame.load(std::memory_order_relaxed);
 		for (const auto& k : kept) {
-			if (k.item && k.item == a_item && k.id == id) {
+			if (k.item && k.item == a_item && k.id == id && k.frame == frame) {
 				return k.info;
 			}
 		}
 		const auto info = ReadNow(a_item);
 		if (a_item) {
-			kept[next] = { a_item, id, info };
+			kept[next] = { a_item, id, frame, info };
 			next = (next + 1) % kept.size();
 		}
 		return info;

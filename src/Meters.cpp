@@ -239,9 +239,10 @@ namespace Plugin
 	void Frame(float a_delta)
 	{
 		const FrameTimer timer;
-		const auto       s = Config();
-		const float      dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
-		auto*            player = RE::PlayerCharacter::GetSingleton();
+		NewReadFrame();
+		const auto  s = Config();
+		const float dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
+		auto*       player = RE::PlayerCharacter::GetSingleton();
 		if (!s.enabled || !player) {
 			ResetAll();
 			ReleaseHands();

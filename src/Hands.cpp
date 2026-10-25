@@ -203,6 +203,30 @@ namespace Plugin
 			}
 		}
 
+		// a hand's magic node in one skeleton (a_view 0 first person, 1 third), searched by name only when that skeleton changes
+		// or once a second: a name search walks the whole skeleton, every frame it was most of this mod's own frame time
+		RE::NiNode* MagicNodeOf(RE::PlayerCharacter* a_player, std::size_t a_hand, std::size_t a_view)
+		{
+			struct Found
+			{
+				RE::NiAVObject*           root{ nullptr };
+				RE::NiPointer<RE::NiNode> node;
+				std::uint32_t             frame{ 0 };
+			};
+			static std::array<Found, 4>    found{};
+			static const RE::BSFixedString kNames[2]{ kNodes[0], kNodes[1] };
+			constexpr std::uint32_t        kRefind = 60;
+			auto*                          root = a_player->Get3D(a_view == 0);
+			auto&                          f = found[a_hand * 2 + a_view];
+			if (f.root != root || gFrame - f.frame > kRefind) {
+				auto* obj = root ? root->GetObjectByName(kNames[a_hand]) : nullptr;
+				f.root = root;
+				f.node.reset(obj ? obj->AsNode() : nullptr);
+				f.frame = gFrame;
+			}
+			return f.node.get();
+		}
+
 		// the hand's magic nodes in both skeletons, and the caster's own (the one in view)
 		std::array<RE::NiNode*, 3> NodesOf(RE::PlayerCharacter* a_player, std::size_t a_hand)
 		{
@@ -211,9 +235,7 @@ namespace Plugin
 				nodes[0] = caster->magicNode;
 			}
 			for (std::size_t v = 0; v < 2; ++v) {
-				auto* root = a_player->Get3D(v == 0);
-				auto* found = root ? root->GetObjectByName(kNodes[a_hand]) : nullptr;
-				auto* node = found ? found->AsNode() : nullptr;
+				auto* node = MagicNodeOf(a_player, a_hand, v);
 				if (node && node != nodes[0] && node != nodes[1]) {
 					nodes[v + 1] = node;
 				}
@@ -223,14 +245,8 @@ namespace Plugin
 
 		// where our own hand light hangs, in BOTH views: the third-person body's magic node of this hand. The caster's own node
 		// is the first-person one in first person, and a light under the first-person skeleton lights nothing in the world on ENB
-		// / Vanilla (Dynamic Wards measured it 2026-10-07; RELight's and Illuminated's ground lights had the same fault in first
-		// person, fixed and confirmed by him in game 2026-10-12). Hidden with that body in first person, the light still shines.
-		RE::NiNode* ThirdPersonMagicNode(RE::PlayerCharacter* a_player, std::size_t a_hand)
-		{
-			auto* root = a_player->Get3D(false);
-			auto* found = root ? root->GetObjectByName(kNodes[a_hand]) : nullptr;
-			return found ? found->AsNode() : nullptr;
-		}
+		// / Vanilla (measured). Hidden with that body in first person, the light still shines.
+		RE::NiNode* ThirdPersonMagicNode(RE::PlayerCharacter* a_player, std::size_t a_hand) { return MagicNodeOf(a_player, a_hand, 1); }
 	}
 
 	void UpdateHands(Heat::Stage a_left, Heat::Stage a_right, const Settings& a_s)

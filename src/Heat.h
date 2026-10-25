@@ -283,7 +283,7 @@ namespace Heat
 		void Focus(const Tuning& a_t, bool a_focusing, float a_delta) noexcept
 		{
 			const float dt = Delta(a_delta);
-			if (!FocusGate(a_t) || a_t.mode == OverdriveMode::kOff || _state != State::kBuilding || !Full() || _heat < BandOf(a_t).low || !a_focusing) {
+			if (!FocusGate(a_t) || a_t.mode == OverdriveMode::kOff || _state != State::kBuilding || !Full(a_t) || _heat < BandOf(a_t).low || !a_focusing) {
 				_focus = 0.0f;
 				return;
 			}
@@ -340,7 +340,7 @@ namespace Heat
 		// the Overdrive key
 		Release PressKey(const Tuning& a_t) noexcept
 		{
-			if (a_t.mode != OverdriveMode::kKey || _state != State::kBuilding || !Full()) {
+			if (a_t.mode != OverdriveMode::kKey || _state != State::kBuilding || !Full(a_t)) {
 				return Release::kNotReady;
 			}
 			switch (Gated(a_t)) {
@@ -379,7 +379,7 @@ namespace Heat
 		// the charge the bar shows: the shared bar, or the last school's
 		[[nodiscard]] float Charge(const Tuning& a_t) const noexcept { return _charge[Index(a_t, _last)]; }
 		// full and waiting to go (the gate decides when)
-		[[nodiscard]] bool    Ready(const Tuning& a_t) const noexcept { return a_t.mode != OverdriveMode::kOff && _state == State::kBuilding && Full(); }
+		[[nodiscard]] bool    Ready(const Tuning& a_t) const noexcept { return a_t.mode != OverdriveMode::kOff && _state == State::kBuilding && Full(a_t); }
 		[[nodiscard]] bool    RedZone(const Tuning& a_t) const noexcept { return _state == State::kBuilding && _heat >= BandOf(a_t).red; }
 		[[nodiscard]] GateNow Gated(const Tuning& a_t) const noexcept
 		{
@@ -468,7 +468,8 @@ namespace Heat
 			}
 			return kFull;
 		}
-		[[nodiscard]] bool Full() const noexcept { return *std::ranges::max_element(_charge) >= kFull; }
+		// full = the bar the HUD shows (the shared bar, or the last school's), so READY never shows over a partly filled bar
+		[[nodiscard]] bool Full(const Tuning& a_t) const noexcept { return _charge[Index(a_t, _last)] >= kFull; }
 
 		void Build() noexcept
 		{
@@ -481,7 +482,7 @@ namespace Heat
 		// Overdrive by itself: automatic, or a vent-gate press waiting for the heat to fall below the red line
 		void StartIfLet(const Tuning& a_t) noexcept
 		{
-			if (_state != State::kBuilding || !Full()) {
+			if (_state != State::kBuilding || !Full(a_t)) {
 				_waiting = false;
 				return;
 			}
