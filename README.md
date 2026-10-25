@@ -5,21 +5,23 @@ Copyright (C) 2026 izzydoingit. GPL-3.0-or-later, see `LICENSE`.
 The plugin of Arcane Overdrive - it is the whole mod: no plugin file, no scripts, nothing written into the save.
 
 ## What it does
-- Casting builds a heat meter through four stages: Warm, Hot, Overheating and Overdrive. Each stage makes damage spells a
-  little stronger and the lights on the casting hands a little brighter and wider.
-- Staying in one school builds heat faster, switching schools costs a stage, and heat drains a moment after the last cast.
-- Overdrive (automatic, on a key, or off): a short burst at the top bonus where the spells in hand grow, then a cooldown
-  with slower magicka.
+- Two bars. Casting fills the Overdrive bar (faster in one school, a school switch costs some, it drains a moment after
+  the last cast). Casting fast builds Heat, which cools when you ease off; its stages - Warm, Hot, Overheating - make
+  damage spells a little stronger and the lights on the casting hands a little brighter and wider.
+- A full Overdrive bar goes when Heat lets it: by default only in a sweet spot (too cold does nothing, too hot misfires);
+  presets Milk Drinker, Dragonborn and Aedra. Overdrive is a short burst at the top bonus where the spells grow, then a
+  burnout with slower magicka.
 - From Overheating up, fire and frost spells leave burning or frozen patches where they land (they can hurt, a switch).
-- The heat on the HUD: a live bar drawn from the spell's own art, or a bar beside Reticle Arcs' crosshair when it is
-  installed.
+- The bars on the HUD - the Overdrive bar shows the magic of the spell being cast, drawn by one pixel shader
+  (`src/BarShader.h`) - or beside Reticle Arcs' crosshair when it is installed.
 
 ## Requires
 SKSE and Address Library for SKSE Plugins; SKSE Menu Framework for the menu and the HUD bar. Reticle Arcs is optional.
 
 ## Settings
-SKSE Menu Framework > Arcane Overdrive, saved to `Data\SKSE\Plugins\SpellMasteryHeat.ini`. The shipped settings file and
-the HUD bar's art are in `package/` (installed to `Data\SKSE\Plugins\`).
+SKSE Menu Framework > Arcane Overdrive (every part on or off, the preset), saved to
+`Data\SKSE\Plugins\SpellMasteryHeat.ini`; every number in `SpellMasteryHeat Advanced.ini` beside it, each line explained.
+The shipped settings files are in `package/` (installed to `Data\SKSE\Plugins\`).
 
 ## Building
 `build.bat` (git, xmake 3 and the Visual Studio C++ tools): CommonLib at the pinned commit, the DLL, then the off-game

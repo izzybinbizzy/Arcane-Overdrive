@@ -6,8 +6,6 @@
 #include "Heat.h"
 #include "Scaled.h"
 #include "SettingsText.h"
-#include "FlameFx.h"
-#include "BarFx.h"
 #include "Overload.h"
 #include "Marks.h"
 #include "SpellLook.h"
@@ -66,30 +64,256 @@ namespace
 		Tuning t;
 		Meter  m;
 		m.Cast(t, School::kDestruction, 50.0f);
-		CHECK(Near(m.HeatOf(t, School::kDestruction), 8.0f));
+		CHECK(Near(m.ChargeOf(t, School::kDestruction), 8.0f));
 		m.Cast(t, School::kDestruction, 50.0f);  // the same school: +50%
-		CHECK(Near(m.HeatOf(t, School::kDestruction), 20.0f));
+		CHECK(Near(m.ChargeOf(t, School::kDestruction), 20.0f));
 		CHECK(m.Last() == School::kDestruction);
 
-		// gain speed scales it
+		// charge speed scales it
 		Tuning fast = t;
 		fast.gain = 2.0f;
 		Meter f;
 		f.Cast(fast, School::kDestruction, 50.0f);
-		CHECK(Near(f.HeatOf(fast, School::kDestruction), 16.0f));
+		CHECK(Near(f.ChargeOf(fast, School::kDestruction), 16.0f));
 
 		// a held spell builds per second, at its own (lower) rate, and never jumps
 		Meter h;
 		for (int i = 0; i < 60; ++i) {
 			h.Hold(t, School::kDestruction, 50.0f, kFrame);
 		}
-		const float second = h.HeatOf(t, School::kDestruction);
+		const float second = h.ChargeOf(t, School::kDestruction);
 		CHECK(second > 4.0f && second < 8.0f * 0.6f * 1.5f + 0.01f);
 		Meter bad;
 		bad.Hold(t, School::kDestruction, 50.0f, std::nanf(""));
 		bad.Hold(t, School::kDestruction, 50.0f, -1.0f);
 		bad.Cast(t, School::kDestruction, -5.0f);  // a nonsense cost still counts as the smallest cast
-		CHECK(Near(bad.HeatOf(t, School::kDestruction), 4.0f));
+		CHECK(Near(bad.ChargeOf(t, School::kDestruction), 4.0f));
+	}
+
+	// the Heat bar: what a cast and a held spell add, the same element and a dual cast, the cooling - and that it shows how FAST
+	// you cast
+	void HeatBar()
+	{
+		Tuning t;
+		Meter  m;
+		m.Cast(t, School::kDestruction, 50.0f, 1);  // 8 x 1.5
+		CHECK(Near(m.HeatNow(), 12.0f));
+		m.Cast(t, School::kDestruction, 50.0f, 1);  // the same element: x 1.25
+		CHECK(Near(m.HeatNow(), 27.0f));
+		m.Cast(t, School::kDestruction, 50.0f, 2);  // another element
+		CHECK(Near(m.HeatNow(), 39.0f));
+		m.Cast(t, School::kDestruction, 50.0f, 0);  // no element: never "the same"
+		m.Cast(t, School::kDestruction, 50.0f, 0);
+		CHECK(Near(m.HeatNow(), 63.0f));
+		Meter d;
+		d.Cast(t, School::kDestruction, 50.0f, 1, true);  // a dual cast: x 1.5
+		CHECK(Near(d.HeatNow(), 18.0f));
+		Tuning up = t;
+		up.heatUp = 2.0f;
+		Meter u;
+		u.Cast(up, School::kDestruction, 50.0f, 1);
+		CHECK(Near(u.HeatNow(), 24.0f));
+		Meter capped;
+		for (int i = 0; i < 20; ++i) {
+			capped.Cast(t, School::kDestruction, 500.0f, 1);
+		}
+		CHECK(Near(capped.HeatNow(), 100.0f));
+
+		// the cooling: a quarter of what it holds a second (x Heat cools); never below 0, and snapped to 0 near it
+		Meter c;
+		c.SetHeat(80.0f);
+		Run(c, t, 1.0f);
+		CHECK(Near(c.HeatNow(), 80.0f * std::exp(-0.25f), 0.6f));
+		Tuning down = t;
+		down.heatDown = 2.0f;
+		Meter c2;
+		c2.SetHeat(80.0f);
+		Run(c2, down, 1.0f);
+		CHECK(Near(c2.HeatNow(), 80.0f * std::exp(-0.5f), 0.6f));
+		Run(c, t, 60.0f);
+		CHECK(c.HeatNow() == 0.0f);
+
+		// the rate: a 50-magicka fire spell every second settles in the sweet spot; every half second boils into the red; every
+		// two seconds stays cool
+		const auto settle = [&t](float a_every, float& a_peak, float& a_low) {
+			Meter  r;
+			Tuning nogo = t;
+			nogo.mode = OverdriveMode::kOff;  // the charge must not start Overdrive here
+			a_peak = 0.0f;
+			a_low = 100.0f;
+			for (float s = 0.0f, next = 0.0f; s < 40.0f; s += kFrame) {
+				if (s >= next) {
+					r.Cast(nogo, School::kDestruction, 50.0f, 1);
+					next += a_every;
+				}
+				r.Tick(nogo, kFrame);
+				if (s > 30.0f) {
+					a_peak = std::max(a_peak, r.HeatNow());
+					a_low = std::min(a_low, r.HeatNow());
+				}
+			}
+		};
+		float peak = 0.0f, low = 0.0f;
+		settle(1.0f, peak, low);
+		CHECK(peak > 60.0f && peak < 75.0f && low > 45.0f && low < 60.0f);
+		settle(0.5f, peak, low);
+		CHECK(peak >= 99.0f && low > 85.0f);
+		settle(2.0f, peak, low);
+		CHECK(peak < 45.0f);
+
+		// a held stream (Flames, about 14 magicka a second) sits in the sweet spot; one in each hand boils over
+		const auto held = [&t](int a_hands) {
+			Meter  r;
+			Tuning nogo = t;
+			nogo.mode = OverdriveMode::kOff;
+			for (float s = 0.0f; s < 30.0f; s += kFrame) {
+				for (int i = 0; i < a_hands; ++i) {
+					r.Hold(nogo, School::kDestruction, 14.0f, kFrame, 1);
+				}
+				r.Tick(nogo, kFrame);
+			}
+			return r.HeatNow();
+		};
+		CHECK(held(1) > 52.0f && held(1) < 72.0f);
+		CHECK(held(2) > 95.0f);
+
+		// the stages and the bonus are the heat's, whatever the school
+		Meter s;
+		s.SetHeat(60.0f);
+		CHECK(s.StageNow(t) == Stage::kHot);
+		CHECK(Near(s.Bonus(t), 1.08f));
+		Tuning per = t;
+		per.perSchool = true;
+		s.Cast(per, School::kIllusion, 50.0f);
+		CHECK(Near(s.Bonus(per), 1.08f));
+		Tuning off = t;
+		off.bonusOn = false;  // the damage bonus switched off
+		CHECK(Near(s.Bonus(off), 1.0f));
+		CHECK(!s.RedZone(t));
+		s.SetHeat(90.0f);
+		CHECK(s.RedZone(t) && s.StageNow(t) == Stage::kOverheating);
+	}
+
+	// how Heat lets a full Overdrive bar go
+	void Gates()
+	{
+		const auto full = [](const Tuning& a_t, float a_heat) {
+			Meter m;
+			m.SetCharge(a_t, kFull);
+			m.SetHeat(a_heat);
+			return m;
+		};
+
+		// the sweet spot on automatic: cold waits, the band goes, too hot waits until it has cooled into the band - never a misfire
+		Tuning t;
+		auto   cold = full(t, 30.0f);
+		CHECK(cold.Gated(t) == GateNow::kCold && cold.Ready(t));
+		Run(cold, t, 0.5f);
+		CHECK(cold.Now() == Meter::State::kBuilding);
+		auto band = full(t, 60.0f);
+		band.Tick(t, kFrame);
+		CHECK(band.Now() == Meter::State::kOverdrive);
+		Run(band, t, 3.0f);  // the heat is spent with the burst: half of it left at its middle
+		CHECK(Near(band.HeatNow(), 30.0f, 1.5f));
+		Run(band, t, 3.1f);
+		CHECK(band.Now() == Meter::State::kCooldown && band.HeatNow() == 0.0f);
+		band.Cast(t, School::kDestruction, 300.0f, 1);  // nothing builds in the burnout
+		CHECK(band.HeatNow() == 0.0f && band.Charge(t) == 0.0f);
+		auto hot = full(t, 95.0f);
+		CHECK(hot.Gated(t) == GateNow::kHot && hot.RedZone(t));
+		Run(hot, t, 0.2f);
+		CHECK(hot.Now() == Meter::State::kBuilding && hot.Misfires() == 0);
+		Run(hot, t, 1.0f);  // 95 cools below 85 in under half a second
+		CHECK(hot.Now() == Meter::State::kOverdrive);
+
+		// the sweet spot on the key: cold does nothing, too hot misfires (heat down a stage, still building), the band goes
+		Tuning key = t;
+		key.mode = OverdriveMode::kKey;
+		auto k = full(key, 30.0f);
+		CHECK(k.PressKey(key) == Release::kCold && k.Now() == Meter::State::kBuilding);
+		k.SetHeat(95.0f);
+		CHECK(k.PressKey(key) == Release::kMisfire);
+		CHECK(Near(k.HeatNow(), 70.0f) && k.Misfires() == 1 && k.Now() == Meter::State::kBuilding && k.Ready(key));
+		CHECK(k.PressKey(key) == Release::kStarted && k.Now() == Meter::State::kOverdrive);
+		Tuning calm = key;
+		calm.misfire = false;  // misfires off: too hot simply does nothing
+		auto nomiss = full(calm, 95.0f);
+		CHECK(nomiss.PressKey(calm) == Release::kHot && Near(nomiss.HeatNow(), 95.0f) && nomiss.Misfires() == 0);
+		Tuning narrow = key;  // Aedra's band
+		narrow.bandLow = 60.0f;
+		narrow.redLine = 80.0f;
+		auto a = full(narrow, 55.0f);
+		CHECK(a.PressKey(narrow) == Release::kCold);
+		a.SetHeat(82.0f);
+		CHECK(a.PressKey(narrow) == Release::kMisfire);
+
+		// vent: below the red line it goes, cold or not; in the red a press waits for the heat to fall, then goes by itself
+		Tuning vent = key;
+		vent.gate = Gate::kVent;
+		auto v = full(vent, 10.0f);
+		CHECK(v.Gated(vent) == GateNow::kOpen && v.PressKey(vent) == Release::kStarted);
+		auto vh = full(vent, 95.0f);
+		CHECK(vh.PressKey(vent) == Release::kWaiting && vh.Waiting());
+		Run(vh, vent, 0.2f);
+		CHECK(vh.Now() == Meter::State::kBuilding);
+		Run(vh, vent, 1.0f);
+		CHECK(vh.Now() == Meter::State::kOverdrive && vh.Misfires() == 0);
+		Tuning ventAuto = vent;
+		ventAuto.mode = OverdriveMode::kAutomatic;
+		auto va = full(ventAuto, 95.0f);
+		Run(va, ventAuto, 0.2f);
+		CHECK(va.Now() == Meter::State::kBuilding);
+		Run(va, ventAuto, 1.0f);
+		CHECK(va.Now() == Meter::State::kOverdrive);
+		auto wait = full(vent, 95.0f);  // a wait ends if the bar stops being full
+		CHECK(wait.PressKey(vent) == Release::kWaiting);
+		wait.SetCharge(vent, 50.0f);
+		Run(wait, vent, 2.0f);
+		CHECK(!wait.Waiting() && wait.Now() == Meter::State::kBuilding);
+
+		// focus: the band's bottom or hotter, then the focus held for its time; letting go starts it over; too cold never fills
+		Tuning focus = key;
+		focus.gate = Gate::kFocus;
+		auto fo = full(focus, 60.0f);
+		CHECK(fo.PressKey(focus) == Release::kFocus && fo.Gated(focus) == GateNow::kFocus);
+		for (int i = 0; i < 30; ++i) {
+			fo.Focus(focus, true, kFrame);
+		}
+		CHECK(fo.Now() == Meter::State::kBuilding && fo.FocusHeld() > 0.45f);
+		fo.Focus(focus, false, kFrame);
+		CHECK(fo.FocusHeld() == 0.0f);
+		for (int i = 0; i < 70 && fo.Now() == Meter::State::kBuilding; ++i) {
+			fo.Focus(focus, true, kFrame);
+		}
+		CHECK(fo.Now() == Meter::State::kOverdrive);
+		auto fc = full(focus, 30.0f);
+		for (int i = 0; i < 120; ++i) {
+			fc.Focus(focus, true, kFrame);
+		}
+		CHECK(fc.Now() == Meter::State::kBuilding && fc.FocusHeld() == 0.0f);
+		Tuning focusAuto = focus;  // automatic waits for the focus too (two charged hands)
+		focusAuto.mode = OverdriveMode::kAutomatic;
+		auto fa = full(focusAuto, 60.0f);
+		Run(fa, focusAuto, 2.0f);
+		CHECK(fa.Now() == Meter::State::kBuilding);
+
+		// the gate off: heat does not matter
+		Tuning open = key;
+		open.heatGate = false;
+		auto o = full(open, 0.0f);
+		CHECK(o.Gated(open) == GateNow::kOpen && o.PressKey(open) == Release::kStarted);
+		auto o2 = full(open, 99.0f);
+		CHECK(o2.PressKey(open) == Release::kStarted && o2.Misfires() == 0);
+
+		// not full, Overdrive off, or in Overdrive: the key does nothing
+		Meter empty;
+		CHECK(empty.PressKey(key) == Release::kNotReady && !empty.Ready(key));
+		Tuning none = key;
+		none.mode = OverdriveMode::kOff;
+		auto n = full(none, 60.0f);
+		CHECK(n.PressKey(none) == Release::kNotReady && !n.Ready(none));
+		Run(n, none, 1.0f);
+		CHECK(n.Now() == Meter::State::kBuilding);
 	}
 
 	void Stages()
@@ -128,27 +352,32 @@ namespace
 	void Drain()
 	{
 		Tuning t;
-		Meter  m;
+		CHECK(Near(t.drain, 5.0f) && Near(t.grace, 3.0f));  // the Overdrive bar drains slowly by default
+		t.drain = 10.0f;                                    // the numbers below: 10 a second after 2 s
+		t.grace = 2.0f;
+		Meter m;
 		m.Cast(t, School::kDestruction, 50.0f);
 		m.Cast(t, School::kDestruction, 50.0f);  // 20
 		Run(m, t, 1.9f);
-		CHECK(Near(m.Shown(t), 20.0f));  // within the grace period: nothing drains
-		Run(m, t, 1.1f);                 // 1 s of drain at 10 a second
-		CHECK(Near(m.Shown(t), 10.0f, 0.4f));
+		CHECK(Near(m.Charge(t), 20.0f));  // within the grace period: nothing drains
+		Run(m, t, 1.1f);                  // 1 s of drain at 10 a second
+		CHECK(Near(m.Charge(t), 10.0f, 0.4f));
 		Run(m, t, 5.0f);
-		CHECK(Near(m.Shown(t), 0.0f));  // never below zero
+		CHECK(Near(m.Charge(t), 0.0f));  // never below zero
+		Run(m, t, 40.0f);                // the heat of those two casts has cooled away too
 		CHECK(m.Idle());
 		// a cast resets the grace period (the last cast's school is still remembered: both get the same-school bonus)
 		m.Cast(t, School::kDestruction, 50.0f);
 		Run(m, t, 1.5f);
 		m.Cast(t, School::kDestruction, 50.0f);
 		Run(m, t, 1.5f);
-		CHECK(Near(m.Shown(t), 24.0f));
-		// a paused game (no time) drains nothing
+		CHECK(Near(m.Charge(t), 24.0f));
+		// a paused game (no time) drains nothing and cools nothing
+		const float heat = m.HeatNow();
 		for (int i = 0; i < 1000; ++i) {
 			m.Tick(t, 0.0f);
 		}
-		CHECK(Near(m.Shown(t), 24.0f));
+		CHECK(Near(m.Charge(t), 24.0f) && Near(m.HeatNow(), heat));
 	}
 
 	void SchoolSwitch()
@@ -158,20 +387,18 @@ namespace
 		for (int i = 0; i < 5; ++i) {
 			m.Cast(t, School::kDestruction, 50.0f);  // 8 + 12 x 4 = 56
 		}
-		CHECK(Near(m.Shown(t), 56.0f));
-		CHECK(m.ShownStage(t) == Stage::kHot);
+		CHECK(Near(m.Charge(t), 56.0f));
 		m.Cast(t, School::kConjuration, 50.0f);  // loses 25, then +8 (no same-school bonus)
-		CHECK(Near(m.Shown(t), 39.0f));
-		CHECK(m.ShownStage(t) == Stage::kWarm);  // one stage down
+		CHECK(Near(m.Charge(t), 39.0f));
 		// switch cooling 0: nothing lost
 		Tuning keep = t;
 		keep.switchLoss = 0.0f;
 		Meter k;
 		k.Cast(keep, School::kDestruction, 50.0f);
 		k.Cast(keep, School::kIllusion, 50.0f);
-		CHECK(Near(k.Shown(keep), 16.0f));
+		CHECK(Near(k.Charge(keep), 16.0f));
 
-		// one meter per school: each builds on its own; switching cools the one being left
+		// one Overdrive bar per school: each builds on its own; switching cools the one being left; the heat stays shared
 		Tuning per = t;
 		per.perSchool = true;
 		Meter p;
@@ -179,46 +406,58 @@ namespace
 			p.Cast(per, School::kDestruction, 50.0f);
 		}
 		p.Cast(per, School::kRestoration, 50.0f);
-		CHECK(Near(p.HeatOf(per, School::kDestruction), 31.0f));
-		CHECK(Near(p.HeatOf(per, School::kRestoration), 8.0f));
-		CHECK(Near(p.Shown(per), 8.0f));  // the bar shows the last school's
-		CHECK(p.StageOf(per, School::kDestruction) == Stage::kWarm);
-		CHECK(Near(p.Bonus(per, School::kRestoration), 1.0f));
-		CHECK(Near(p.Bonus(per, School::kDestruction), 1.04f));
+		CHECK(Near(p.ChargeOf(per, School::kDestruction), 31.0f));
+		CHECK(Near(p.ChargeOf(per, School::kRestoration), 8.0f));
+		CHECK(Near(p.Charge(per), 8.0f));  // the bar shows the last school's
+		CHECK(Near(p.HeatNow(), 72.0f));   // six casts' heat, one bar
+		CHECK(Near(p.Bonus(per), 1.08f));  // Hot, whatever the school
+
+		// a full school's bar is ready only while it is the one shown: never READY over another school's partly filled bar
+		Tuning perKey = per;
+		perKey.mode = OverdriveMode::kKey;
+		perKey.heatGate = false;
+		Meter q;
+		q.SetCharge(perKey, 0.0f);
+		q.Cast(perKey, School::kDestruction, 50.0f);
+		q.SetCharge(perKey, 100.0f);
+		CHECK(q.Ready(perKey));
+		q.Cast(perKey, School::kAlteration, 50.0f);
+		CHECK(!q.Ready(perKey) && q.PressKey(perKey) == Release::kNotReady);
+		CHECK(q.Now() == Meter::State::kBuilding);
 	}
 
 	void Overdrive()
 	{
-		// automatic: at 100 it starts, lasts the burst, then the cooldown locks the meter at 0
+		// with the Heat gate off, the Overdrive bar alone: automatic, at 100 it starts, lasts the burst, then the cooldown locks it at 0
 		Tuning t;
-		Meter  m;
-		int    casts = 0;
+		t.heatGate = false;
+		Meter m;
+		int   casts = 0;
 		while (m.Now() == Meter::State::kBuilding && casts < 100) {
 			m.Cast(t, School::kDestruction, 50.0f);
 			++casts;
 		}
 		CHECK(m.Now() == Meter::State::kOverdrive);
 		CHECK(casts == 9);  // 8 + 12 x 8 = 104
-		CHECK(m.ShownStage(t) == Stage::kOverdrive);
-		CHECK(Near(m.Bonus(t, School::kDestruction), 1.25f));
-		CHECK(Near(m.Bonus(t, School::kIllusion), 1.25f));  // every spell, whatever its school
+		CHECK(m.StageNow(t) == Stage::kOverdrive);
+		CHECK(Near(m.Bonus(t), 1.25f));  // every spell, whatever its school
 		Run(m, t, 3.0f);
 		CHECK(m.Now() == Meter::State::kOverdrive);
-		CHECK(Near(m.Shown(t), 100.0f));  // no drain while it lasts
+		CHECK(Near(m.Charge(t), 100.0f));  // no drain while it lasts
 		Run(m, t, 3.1f);
 		CHECK(m.Now() == Meter::State::kCooldown);
-		CHECK(Near(m.Shown(t), 0.0f));
-		CHECK(Near(m.MagickaRegen(t), 0.4f));                 // slow magicka: on by default
-		CHECK(Near(m.Bonus(t, School::kDestruction), 1.0f));  // weaker spells: off by default
-		m.Cast(t, School::kDestruction, 500.0f);              // heat cannot build
-		CHECK(Near(m.Shown(t), 0.0f));
+		CHECK(Near(m.Charge(t), 0.0f));
+		CHECK(Near(m.MagickaRegen(t), 0.4f));     // slow magicka: on by default
+		CHECK(Near(m.Bonus(t), 1.0f));            // weaker spells: off by default
+		m.Cast(t, School::kDestruction, 500.0f);  // nothing can build
+		CHECK(Near(m.Charge(t), 0.0f));
 		Run(m, t, 9.5f);
 		CHECK(m.Now() == Meter::State::kCooldown);
 		Run(m, t, 0.6f);
 		CHECK(m.Now() == Meter::State::kBuilding);
 		CHECK(Near(m.MagickaRegen(t), 1.0f));
 		m.Cast(t, School::kDestruction, 50.0f);
-		CHECK(Near(m.Shown(t), 12.0f));  // builds again (the same school as before: +50%)
+		CHECK(Near(m.Charge(t), 12.0f));  // builds again (the same school as before: +50%)
 
 		// the penalties, each optional
 		Tuning harsh = t;
@@ -228,7 +467,7 @@ namespace
 		h.ForceStage(harsh, Stage::kOverdrive);
 		Run(h, harsh, 6.1f);
 		CHECK(h.Now() == Meter::State::kCooldown);
-		CHECK(Near(h.Bonus(harsh, School::kDestruction), 0.85f));
+		CHECK(Near(h.Bonus(harsh), 0.85f));
 		CHECK(Near(h.MagickaRegen(harsh), 1.0f));
 
 		// no cooldown at all: straight back to building
@@ -239,45 +478,46 @@ namespace
 		Run(n, none, 6.1f);
 		CHECK(n.Now() == Meter::State::kBuilding);
 
-		// key press: it waits at Overheating, full, until the key; the key does nothing before
+		// key press: it waits, full, until the key; the key does nothing before
 		Tuning key = t;
 		key.mode = OverdriveMode::kKey;
+		key.drain = 10.0f;
+		key.grace = 2.0f;
 		Meter k;
-		CHECK(!k.PressKey(key));
+		CHECK(k.PressKey(key) == Release::kNotReady);
 		for (int i = 0; i < 20; ++i) {
 			k.Cast(key, School::kDestruction, 50.0f);
 		}
 		CHECK(k.Now() == Meter::State::kBuilding);
 		CHECK(k.Ready(key));
-		CHECK(k.ShownStage(key) == Stage::kOverheating);
-		CHECK(Near(k.Bonus(key, School::kDestruction), 1.12f));
-		CHECK(k.PressKey(key));
+		CHECK(k.StageNow(key) == Stage::kOverheating);  // twenty casts' heat, none of it cooled
+		CHECK(Near(k.Bonus(key), 1.12f));
+		CHECK(k.PressKey(key) == Release::kStarted);
 		CHECK(k.Now() == Meter::State::kOverdrive);
-		CHECK(!k.PressKey(key));  // not twice
-		// left to cool below full, it is no longer ready
+		CHECK(k.PressKey(key) == Release::kNotReady);  // not twice
+		// left to drain below full, it is no longer ready
 		Meter c;
 		for (int i = 0; i < 20; ++i) {
 			c.Cast(key, School::kDestruction, 50.0f);
 		}
 		Run(c, key, 2.5f);
 		CHECK(!c.Ready(key));
-		CHECK(!c.PressKey(key));
+		CHECK(c.PressKey(key) == Release::kNotReady);
 		// the key in automatic or off mode does nothing
 		Meter a;
-		CHECK(!a.PressKey(t));
+		CHECK(a.PressKey(t) == Release::kNotReady);
 
-		// off: the meter tops out at Overheating for ever
+		// off: the bar tops out full for ever
 		Tuning off = t;
 		off.mode = OverdriveMode::kOff;
 		Meter o;
 		for (int i = 0; i < 50; ++i) {
 			o.Cast(off, School::kDestruction, 50.0f);
 		}
-		CHECK(o.Now() == Meter::State::kBuilding);
-		CHECK(o.ShownStage(off) == Stage::kOverheating);
-		CHECK(!o.Ready(off) && !o.PressKey(off));
+		CHECK(o.Now() == Meter::State::kBuilding && Near(o.Charge(off), 100.0f));
+		CHECK(!o.Ready(off) && o.PressKey(off) == Release::kNotReady);
 
-		// held spells take far longer than casts to reach Overdrive (Flames, about 14 magicka a second)
+		// held spells take far longer than casts to fill the bar (Flames, about 14 magicka a second)
 		Meter held;
 		float seconds = 0.0f;
 		while (held.Now() == Meter::State::kBuilding && seconds < 120.0f) {
@@ -292,17 +532,21 @@ namespace
 	{
 		Tuning t;
 		Meter  m;
-		m.SetHeat(t, 60.0f);
-		CHECK(m.ShownStage(t) == Stage::kHot);
-		m.SetHeat(t, 500.0f);
-		CHECK(Near(m.Shown(t), 100.0f));
-		m.SetHeat(t, std::nanf(""));
-		CHECK(Near(m.Shown(t), 0.0f));
+		m.SetHeat(60.0f);
+		CHECK(m.StageNow(t) == Stage::kHot);
+		m.SetHeat(500.0f);
+		CHECK(Near(m.HeatNow(), 100.0f));
+		m.SetHeat(std::nanf(""));
+		CHECK(Near(m.HeatNow(), 0.0f));
+		m.SetCharge(t, 70.0f);
+		CHECK(Near(m.Charge(t), 70.0f));
+		m.SetCharge(t, -4.0f);
+		CHECK(Near(m.Charge(t), 0.0f));
 		for (auto s : { Stage::kCold, Stage::kWarm, Stage::kHot, Stage::kOverheating, Stage::kOverdrive }) {
-			m.ForceStage(t, s);
-			CHECK(m.ShownStage(t) == s);
+			m.ForceStage(t, s);  // Overdrive starts whatever the gate says
+			CHECK(m.StageNow(t) == s);
 		}
-		m.SetHeat(t, 30.0f);  // ends a forced Overdrive
+		m.SetHeat(30.0f);  // ends a forced Overdrive
 		CHECK(m.Now() == Meter::State::kBuilding);
 		m.Reset();
 		CHECK(m.Idle());
@@ -314,33 +558,48 @@ namespace
 		std::mt19937                          rng(11);
 		std::uniform_real_distribution<float> u(0.0f, 1.0f);
 		bool                                  ok = true;
-		for (int run = 0; run < 40; ++run) {
+		int                                   started = 0, misfired = 0;
+		for (int run = 0; run < 48; ++run) {
 			Tuning t;
 			t.mode = static_cast<OverdriveMode>(run % 3);
 			t.perSchool = run % 2 == 0;
 			t.weaker = run % 4 < 2;
-			Meter m;
+			t.heatGate = run % 8 != 7;
+			t.gate = static_cast<Gate>((run / 3) % 3);
+			t.misfire = run % 5 != 0;
+			Meter  m;
+			School school = School::kDestruction;
+			int    element = 1;
 			for (int i = 0; i < 20000; ++i) {
-				const auto  school = static_cast<School>(static_cast<int>(u(rng) * 6.0f) % 6);
+				if (u(rng) < 0.01f) {  // a mage keeps to a school and an element for a while, so the bar can fill
+					school = static_cast<School>(static_cast<int>(u(rng) * 6.0f) % 6);
+					element = static_cast<int>(u(rng) * 4.0f) % 4;
+				}
 				const float r = u(rng);
 				if (r < 0.03f) {
-					m.Cast(t, school, u(rng) * 300.0f);
+					m.Cast(t, school, u(rng) * 300.0f, element, u(rng) < 0.2f);
 				} else if (r < 0.08f) {
-					m.Hold(t, school, u(rng) * 40.0f, kFrame);
-				} else if (r < 0.081f) {
-					m.PressKey(t);
+					m.Hold(t, school, u(rng) * 40.0f, kFrame, element);
+				} else if (r < 0.085f) {
+					const auto said = m.PressKey(t);
+					started += said == Release::kStarted ? 1 : 0;
+					misfired += said == Release::kMisfire ? 1 : 0;
 				}
+				m.Focus(t, u(rng) < 0.5f, kFrame);
 				m.Tick(t, u(rng) < 0.01f ? 0.3f : kFrame);
 				for (int s = 0; s < 6; ++s) {
-					const float h = m.HeatOf(t, static_cast<School>(s));
-					const float b = m.Bonus(t, static_cast<School>(s));
-					ok &= std::isfinite(h) && h >= 0.0f && h <= 100.0f;
-					ok &= b >= 0.85f - 1e-6f && b <= 1.25f + 1e-6f;
+					const float c = m.ChargeOf(t, static_cast<School>(s));
+					ok &= std::isfinite(c) && c >= 0.0f && c <= 100.0f;
 				}
+				const float h = m.HeatNow(), b = m.Bonus(t);
+				ok &= std::isfinite(h) && h >= 0.0f && h <= 100.0f;
+				ok &= b >= 0.85f - 1e-6f && b <= 1.25f + 1e-6f;
 				ok &= m.MagickaRegen(t) >= 0.4f - 1e-6f && m.MagickaRegen(t) <= 1.0f;
+				ok &= std::isfinite(m.FocusHeld()) && m.FocusHeld() >= 0.0f;
 			}
 		}
 		CHECK(ok);
+		CHECK(started > 0 && misfired > 0);  // the random sessions reached both
 	}
 
 	void Counting()
@@ -449,13 +708,40 @@ namespace
 		s.counts = { true, true };
 		s.enemies = true;
 		s.debugLog = true;
-		std::stringstream text;
-		SettingsText::Write(text, s);
-		Settings   back;
-		const auto r = SettingsText::Read(text, back);
+		s.tuning.heatGate = false;
+		s.tuning.gate = Gate::kFocus;
+		s.tuning.bandLow = 40.0f;
+		s.tuning.redLine = 90.0f;
+		s.tuning.heatUp = 1.3f;
+		s.tuning.heatDown = 0.8f;
+		s.tuning.heatPerCast = 2.0f;
+		s.tuning.heatHeld = 4.0f;
+		s.tuning.heatSameElement = 0.5f;
+		s.tuning.heatDual = 1.0f;
+		s.tuning.cool = 0.3f;
+		s.tuning.misfire = false;
+		s.tuning.misfireDrop = 40.0f;
+		s.tuning.backlash = true;
+		s.tuning.backlashMagicka = 0.2f;
+		s.tuning.focusSeconds = 1.5f;
+		s.tuning.bonusOn = false;
+		// both files, each with only its own keys; read back together they give every setting
+		std::stringstream menu, advanced;
+		SettingsText::WriteMenu(menu, s);
+		SettingsText::WriteAdvanced(advanced, s);
+		std::stringstream both(menu.str() + advanced.str());
+		Settings          back;
+		const auto        r = SettingsText::Read(both, back);
 		CHECK(back == s);
 		CHECK(r.problems.empty());
 		CHECK(r.taken == static_cast<int>(std::size(SettingsText::kKeys)));
+		CHECK(menu.str().find("ChargeSpeed") == std::string::npos && menu.str().find("[Settings]\nEnabled=0") != std::string::npos);
+		CHECK(advanced.str().find("Enabled") == std::string::npos && advanced.str().find("[Heat]\n") != std::string::npos);
+		CHECK(advanced.str().find("; how fast Heat climbs, percent (25 to 300)\nHeatUp=130\n") != std::string::npos);  // each line explained
+		Settings           fromAdvanced;                                                                               // the advanced file alone sets none of the menu's keys
+		std::istringstream advancedOnly(advanced.str());
+		SettingsText::Read(advancedOnly, fromAdvanced);
+		CHECK(fromAdvanced.enabled && Near(fromAdvanced.tuning.heatUp, 1.3f));
 
 		std::istringstream edited("[Settings]\nGainSpeed=9999\nOverdrive=5\nOverdriveKey=-4\nDrainSpeed=1.5\nNope=3\nBarWidth=10\n");
 		Settings           e;
@@ -463,19 +749,63 @@ namespace
 		CHECK(Near(e.tuning.gain, 3.0f));
 		CHECK(e.tuning.mode == OverdriveMode::kOff);
 		CHECK(e.overdriveKey == 0);
-		CHECK(Near(e.tuning.drain, 10.0f));
+		CHECK(Near(e.tuning.drain, 5.0f));
 		CHECK(Near(e.barWidth, 0.5f));
 		CHECK(re.problems.size() == 2);
 
-		// his rename 2026-10-18: the key is OverheatingAt now; an older file's BlazingAt is still read, and never written again
-		std::istringstream old("[Settings]\nBlazingAt=80\n");
+		// a key counts in any section; an unknown key in one of ours is reported; another mod's section is left alone quietly
+		std::istringstream sections("[Heat]\nRedLine=70\nBarY=20\nNope=1\n[Overdrive]\nBurstSeconds=9\n[Someone Else]\nNope=2\nRedLine=10\n");
+		Settings           sec;
+		const auto         rsec = SettingsText::Read(sections, sec);
+		CHECK(Near(sec.tuning.redLine, 70.0f) && Near(sec.barY, 0.2f) && Near(sec.tuning.burst, 9.0f));
+		CHECK(rsec.problems.size() == 1 && rsec.taken == 3);
+
+		// an older one-file ini (his: GainSpeed 300, BlazingAt, BarY 88, BarStyle 0) still reads: Blazing is Overheating, the one
+		// meter's gain speed is the Overdrive bar's, neither old name is written again, and the old bar style is skipped quietly
+		std::istringstream old("; Spell Mastery Heat\n[Settings]\nGainSpeed=300\nBlazingAt=80\nBarY=88\nBarStyle=0\nDrainSpeed=10\n");
 		Settings           o;
 		const auto         ro = SettingsText::Read(old, o);
-		CHECK(Near(o.tuning.at[2], 80.0f));
-		CHECK(ro.problems.empty() && ro.taken == 1);
+		CHECK(Near(o.tuning.gain, 3.0f) && Near(o.tuning.at[2], 80.0f) && Near(o.barY, 0.88f) && Near(o.tuning.drain, 10.0f));
+		CHECK(ro.problems.empty() && ro.taken == 4);
 		CHECK(SettingsText::Apply(o, "blazingat", 70) && Near(o.tuning.at[2], 70.0f));
-		CHECK(text.str().find("OverheatingAt=") != std::string::npos && text.str().find("Blazing") == std::string::npos);
+		const std::string all = menu.str() + advanced.str();
+		CHECK(all.find("OverheatingAt=") != std::string::npos && all.find("Blazing") == std::string::npos && all.find("GainSpeed") == std::string::npos);
 		CHECK(StageName(Stage::kOverheating) == "Overheating");
+		CHECK(SettingsText::Apply(o, "FocusMs", 99999) && Near(o.tuning.focusSeconds, 5.0f));
+		CHECK(SettingsText::Apply(o, "Gate", 7) && o.tuning.gate == Gate::kFocus);
+		CHECK(SettingsText::Apply(o, "BandLow", -10) && Near(o.tuning.bandLow, 0.0f));
+
+		// the presets, easy to hard: the defaults ARE Dragonborn; each lands on itself; one changed value reads Custom
+		CHECK(std::size(SettingsText::kPresets) == 3);
+		CHECK(std::string(SettingsText::kPresets[0].name) == "Milk Drinker" && std::string(SettingsText::kPresets[1].name) == "Dragonborn" &&
+			  std::string(SettingsText::kPresets[2].name) == "Aedra");
+		CHECK(SettingsText::PresetOf(Settings{}) == std::optional<std::size_t>{ 1 });
+		for (std::size_t i = 0; i < 3; ++i) {
+			Settings p;
+			p.tuning.burst = 29.0f;  // any start point
+			SettingsText::ApplyPreset(p, i);
+			CHECK(SettingsText::PresetOf(p) == std::optional<std::size_t>{ i });
+			for (const auto& [key, value] : SettingsText::kPresets[i].values) {
+				Settings probe;
+				CHECK(SettingsText::Apply(probe, key, value));  // every key is a real one
+			}
+			for (std::size_t j = 0; j < SettingsText::kPresets[i].values.size(); ++j) {  // the same keys, in the same order, in all three
+				CHECK(std::string(SettingsText::kPresets[i].values[j].first) == SettingsText::kPresets[0].values[j].first);
+			}
+		}
+		Settings milk;
+		SettingsText::ApplyPreset(milk, 0);
+		CHECK(milk.tuning.gate == Gate::kVent && !milk.tuning.misfire && Near(milk.tuning.heatUp, 0.7f) && Near(milk.tuning.heatDown, 1.3f) &&
+			  Near(milk.tuning.gain, 1.3f) && Near(milk.tuning.burst, 8.0f) && Near(milk.tuning.cooldown, 6.0f) && !milk.tuning.slowMagicka && !milk.tuning.weaker);
+		Settings aedra;
+		SettingsText::ApplyPreset(aedra, 2);
+		CHECK(aedra.tuning.gate == Gate::kSweetSpot && Near(aedra.tuning.bandLow, 60.0f) && Near(aedra.tuning.redLine, 80.0f) && aedra.tuning.backlash &&
+			  Near(aedra.tuning.slowMagickaTo, 0.25f) && aedra.tuning.weaker && aedra.enemies && Near(aedra.tuning.burst, 5.0f) && Near(aedra.tuning.cooldown, 14.0f));
+		CHECK(Near(milk.tuning.bonusPerStage, aedra.tuning.bonusPerStage) && Near(milk.tuning.overdriveBonus, aedra.tuning.overdriveBonus));  // the same reward
+		aedra.tuning.heatUp = 1.2f;
+		CHECK(!SettingsText::PresetOf(aedra).has_value());  // Custom
+		SettingsText::ApplyPreset(aedra, 99);               // out of range: nothing changes
+		CHECK(!SettingsText::PresetOf(aedra).has_value());
 
 		CHECK(SettingsText::KeyName(34) == "G");
 		CHECK(SettingsText::KeyName(2) == "1");
@@ -497,78 +827,32 @@ namespace
 		CHECK(SettingsText::GamepadCode(0x0003) == -1);
 		static_assert(SettingsText::GamepadCode(0x2000) == 277);  // B, worked out at compile time
 
-		// the settings file that ships reads back to exactly the built-in defaults
+		// the two settings files that ship are exactly what the plugin writes for the built-in defaults (made with
+		// test_heat --write-menu / --write-advanced), and read back to them
 		std::string here = __FILE__;
 		here = here.substr(0, here.find_last_of("/\\") + 1);
-		std::ifstream shipped(here + "../package/SKSE/Plugins/SpellMasteryHeat.ini");
-		CHECK(shipped.good());
-		Settings fromFile;
+		const auto shippedText = [&here](const char* a_name) {
+			std::ifstream     in(here + "../package/SKSE/Plugins/" + a_name, std::ios::binary);
+			std::stringstream text;
+			text << in.rdbuf();
+			auto s = text.str();
+			std::erase(s, '\r');  // a Windows checkout may turn the line ends into CRLF; the plugin reads either
+			return std::pair{ in.good() || in.eof(), s };
+		};
+		const auto [menuOk, shippedMenu] = shippedText("SpellMasteryHeat.ini");
+		const auto [advancedOk, shippedAdvanced] = shippedText("SpellMasteryHeat Advanced.ini");
+		std::stringstream defaultMenu, defaultAdvanced;
+		SettingsText::WriteMenu(defaultMenu, Settings{});
+		SettingsText::WriteAdvanced(defaultAdvanced, Settings{});
+		CHECK(menuOk && shippedMenu == defaultMenu.str());
+		CHECK(advancedOk && shippedAdvanced == defaultAdvanced.str());
+		std::stringstream shippedBoth(shippedMenu + shippedAdvanced);
+		Settings          fromFile;
 		fromFile.enabled = false;
-		const auto rs = SettingsText::Read(shipped, fromFile);
+		const auto rs = SettingsText::Read(shippedBoth, fromFile);
 		CHECK(fromFile == Settings{});
 		CHECK(rs.problems.empty());
 		CHECK(rs.taken == static_cast<int>(std::size(SettingsText::kKeys)));
-	}
-
-	// the flame bar's moving parts (FlameFx.h, his order 2026-10-11)
-	void FlameBar()
-	{
-		using namespace FlameFx;
-		float lo = 1.0f, hi = 0.0f, jump = 0.0f, prev = Noise2(0.0f, 0.0f);
-		for (int i = 1; i < 20000; ++i) {
-			const float x = static_cast<float>(i) * 0.01f;
-			const float n = Noise2(x, x * 0.37f);
-			lo = std::min(lo, n);
-			hi = std::max(hi, n);
-			jump = std::max(jump, std::fabs(n - prev));
-			prev = n;
-			CHECK(Flicker(x, x * 2.0f) >= 0.0f && Flicker(x, x * 2.0f) <= 1.0f);
-		}
-		CHECK(lo >= 0.0f && hi <= 1.0f && hi - lo > 0.5f);  // the whole range, never outside it
-		CHECK(jump < 0.05f);                                // smooth: no step between neighbours
-		CHECK(Near(Noise1(std::nanf("")), 0.5f) && Near(Noise2(std::nanf(""), 1.0f), 0.5f));
-		CHECK(Noise1(-12345.6f) >= 0.0f && Noise1(1e9f) <= 1.0f);
-		const auto cold = HeatColor(0.0f), white = HeatColor(1.0f), mid = HeatColor(0.5f);
-		CHECK(cold.r > cold.g && cold.g < 0.1f);   // deep red
-		CHECK(white.g > 0.95f && white.b > 0.9f);  // white-hot
-		CHECK(mid.r >= mid.g && mid.g >= mid.b);   // orange in between
-		CHECK(Near(HeatColor(-3.0f).r, cold.r) && Near(HeatColor(std::nanf("")).r, cold.r));
-		// every stage stands taller and hotter than the one before; the burnout has no tongues but smoke
-		CHECK(LookOf(Mood::kCold).tongue == 0.0f && LookOf(Mood::kCold).embers == 0.0f);
-		CHECK(LookOf(Mood::kWarm).tongue < LookOf(Mood::kHot).tongue && LookOf(Mood::kHot).tongue < LookOf(Mood::kOverheating).tongue);
-		CHECK(LookOf(Mood::kOverheating).tongue < LookOf(Mood::kOverdrive).tongue);
-		CHECK(LookOf(Mood::kWarm).temperature < LookOf(Mood::kOverdrive).temperature);
-		CHECK(LookOf(Mood::kOverdrive).sparks > 0.0f && LookOf(Mood::kBurnout).tongue == 0.0f && LookOf(Mood::kBurnout).smoke > 0.0f);
-		// the pool never grows past its size, frees the dead and spawns at the asked rate
-		Particles<16> pool;
-		pool.Emit(Particle::Kind::kEmber, 1000.0f, 0.1f, 200.0f, 7.0f, 1.0f);
-		CHECK(pool.Alive() == 16);
-		for (int i = 0; i < 400; ++i) {
-			pool.Step(kFrame, static_cast<float>(i) * kFrame);
-		}
-		CHECK(pool.Alive() == 0);  // every ember lives under 2 s
-		Particles<64> rate;
-		for (int i = 0; i < 60; ++i) {
-			rate.Emit(Particle::Kind::kSmoke, 10.0f, kFrame, 200.0f, 7.0f, 1.0f);
-		}
-		CHECK(rate.Alive() >= 9 && rate.Alive() <= 10);  // 10 a second for 1 s (smoke outlives the second)
-		for (const auto& p : rate.All()) {
-			if (p.alive) {
-				CHECK(p.x >= 0.0f && p.x <= 200.0f && p.vy < 0.0f);  // on the bar, rising
-			}
-		}
-		rate.Emit(Particle::Kind::kEmber, std::nanf(""), kFrame, 200.0f, 7.0f, 1.0f);
-		rate.Emit(Particle::Kind::kEmber, 10.0f, kFrame, std::nanf(""), 7.0f, 1.0f);
-		rate.Step(std::nanf(""), 0.0f);
-		rate.Clear();
-		CHECK(rate.Alive() == 0);
-		// the bar style key round-trips and is clamped
-		Plugin::Settings st;
-		CHECK(Plugin::SettingsText::Apply(st, "BarStyle", 1) && st.barStyle == 1);
-		CHECK(Plugin::SettingsText::Apply(st, "BarStyle", 2) && st.barStyle == 2);  // the spell looks (2026-10-13)
-		CHECK(Plugin::SettingsText::Apply(st, "BarStyle", 9) && st.barStyle == 2);
-		CHECK(Plugin::SettingsText::Apply(st, "BarStyle", -3) && st.barStyle == 0);
-		CHECK(Plugin::Settings{}.barStyle == 2);  // the spell bars by default (his order 2026-10-15)
 	}
 
 	// ------------------------------------------------------------------ the spell -> look classifier (SpellLook.h, 2026-10-13)
@@ -663,141 +947,6 @@ namespace
 		CHECK(Name(static_cast<Look>(200)) == "generic");
 	}
 
-	// ------------------------------------------------------------------ the live spell bars (BarFx.h, his order 2026-10-15)
-	struct BarRun
-	{
-		int   maxAlive{ 0 }, arcs{ 0 };
-		bool  finite{ true };
-		float meanY{ 0.0f }, meanVx{ 0.0f };
-		int   inside{ 0 };
-	};
-
-	BarRun RunBar(SpellLook::Look a_look, const BarFx::Drive& a_d, float a_secs)
-	{
-		BarFx::Bar  bar;
-		const auto& p = BarFx::ProfileOf(a_look);
-		BarRun      r;
-		for (int f = 0; f < static_cast<int>(a_secs * 60.0f); ++f) {
-			bar.Step(p, a_d, 1.0f / 60.0f, static_cast<float>(f) / 60.0f);
-			r.maxAlive = std::max(r.maxAlive, bar.Alive());
-			for (const auto& a : bar.Arcs()) {
-				r.arcs += a.Alive() ? 1 : 0;
-			}
-		}
-		int n = 0;
-		for (const auto& q : bar.All()) {
-			if (!q.alive) {
-				continue;
-			}
-			r.finite &= std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.vx) && std::isfinite(q.vy) && std::isfinite(q.Size());
-			r.meanY += q.y;
-			r.meanVx += q.vx;
-			r.inside += q.x >= 0.0f && q.x <= a_d.w && q.y >= 0.0f && q.y <= a_d.h ? 1 : 0;
-			++n;
-		}
-		if (n) {
-			r.meanY /= static_cast<float>(n);
-			r.meanVx /= static_cast<float>(n);
-		}
-		return r;
-	}
-
-	void SpellBars()
-	{
-		using namespace BarFx;
-		using SpellLook::Look;
-		// every look has a profile: something is born, it lives, it reaches round the bar (the 360 part)
-		for (std::size_t i = 0; i < SpellLook::kLooks; ++i) {
-			const auto& p = ProfileOf(static_cast<Look>(i));
-			float       sides = 0.0f;
-			for (const float s : p.sides) {
-				CHECK(s >= 0.0f);
-				sides += s;
-			}
-			CHECK(sides > 0.0f);
-			CHECK(p.rate > 0.0f && p.life0 > 0.0f && p.life0 <= p.life1 && p.size0 > 0.0f && p.size1 > 0.0f);
-			CHECK(p.spill >= 1.5f);
-			CHECK(p.body >= 0.0f && p.body <= 1.0f);
-		}
-		CHECK(&ProfileOf(static_cast<Look>(200)) == &ProfileOf(Look::kGeneric));
-		// his examples: fire climbs, frost is blown along the bar, shock arcs; the absorbs draw in, their fill flowing back
-		CHECK(ProfileOf(Look::kFire).motion == Motion::kRise && ProfileOf(Look::kFire).lift > 0.0f);
-		CHECK(ProfileOf(Look::kFrost).motion == Motion::kWind && ProfileOf(Look::kFrost).wind > 50.0f);
-		CHECK(ProfileOf(Look::kShock).motion == Motion::kArc);
-		CHECK(ProfileOf(Look::kAbsorbHealth).motion == Motion::kInward && ProfileOf(Look::kAbsorbHealth).flow < 0.0f);
-
-		// the flow field: bounded, finite, the same place the same value, nonsense in -> a calm value out
-		for (int i = 0; i < 400; ++i) {
-			const float x = static_cast<float>(i) * 0.37f - 60.0f, y = static_cast<float>(i) * 0.11f - 9.0f;
-			const float n = Noise(x, y);
-			CHECK(n >= 0.0f && n <= 1.0f);
-			float vx = 0.0f, vy = 0.0f;
-			Curl(x, y, vx, vy);
-			CHECK(std::isfinite(vx) && std::isfinite(vy) && std::fabs(vx) < 4.0f && std::fabs(vy) < 4.0f);
-		}
-		CHECK(Near(Noise(std::nanf(""), 1.0f), 0.5f));
-		CHECK(Near(Noise(3.3f, 4.7f), Noise(3.3f, 4.7f)));
-
-		Drive full;
-		full.fill = 1.0f;
-		full.heat = 1.0f;
-		full.w = 240.0f;
-		full.h = 10.0f;
-		// nothing is born on an empty bar
-		Drive empty = full;
-		empty.fill = 0.0f;
-		for (std::size_t i = 0; i < SpellLook::kLooks; ++i) {
-			const auto r = RunBar(static_cast<Look>(i), empty, 2.0f);
-			CHECK(r.maxAlive == 0 && r.arcs == 0);
-		}
-		// a full bar in every look: busy, never past the cap, every number finite
-		for (std::size_t i = 0; i < SpellLook::kLooks; ++i) {
-			const auto r = RunBar(static_cast<Look>(i), full, 4.0f);
-			CHECK(r.maxAlive > 10 && r.maxAlive <= kMax);
-			CHECK(r.finite);
-		}
-		// fire rises: its particles live above the bar's middle; frost streams along +x; shock arcs, fire does not
-		CHECK(RunBar(Look::kFire, full, 3.0f).meanY < full.h * 0.5f);
-		CHECK(RunBar(Look::kFrost, full, 3.0f).meanVx > 10.0f);
-		CHECK(RunBar(Look::kShock, full, 3.0f).arcs > 0 && RunBar(Look::kFire, full, 3.0f).arcs == 0);
-		// the absorbs are drawn in: some of their particles are inside the bar
-		CHECK(RunBar(Look::kAbsorbHealth, full, 3.0f).inside > 0);
-		// Overdrive's power: more of them; the cooldown: fewer, and no arcs
-		Drive od = full;
-		od.power = 2.0f;
-		Drive cool = full;
-		cool.burnout = true;
-		CHECK(RunBar(Look::kFire, od, 3.0f).maxAlive > RunBar(Look::kFire, full, 3.0f).maxAlive);
-		CHECK(RunBar(Look::kFire, cool, 3.0f).maxAlive < RunBar(Look::kFire, full, 3.0f).maxAlive);
-		CHECK(RunBar(Look::kShock, cool, 3.0f).arcs == 0);
-		// nonsense in: no crash, nothing past the cap, all finite
-		Drive junk;
-		junk.fill = std::nanf("");
-		junk.heat = 50.0f;
-		junk.power = 99.0f;
-		junk.w = -5.0f;
-		junk.h = std::nanf("");
-		junk.k = 0.0f;
-		const auto rj = RunBar(Look::kFrost, junk, 1.0f);
-		CHECK(rj.finite && rj.maxAlive <= kMax);
-		Bar still;
-		still.Step(ProfileOf(Look::kFire), full, std::nanf(""), 0.0f);
-		CHECK(still.Alive() == 0);
-
-		// the fill's two layers flow apart, within one texture's width
-		float u0 = 0.0f, u1 = 0.0f;
-		FlowUv(12.5f, 0.32f, 1.0f, u0, u1);
-		CHECK(std::fabs(u0) <= 1.0f && std::fabs(u1) <= 1.0f && !Near(u0, u1));
-		FlowUv(std::nanf(""), std::nanf(""), std::nanf(""), u0, u1);
-		CHECK(std::isfinite(u0) && std::isfinite(u1));
-		// colors: the spell's own when young, grey-blue in the cooldown
-		const auto& fire = ProfileOf(Look::kFire);
-		const auto  young = ColorOf(fire, { 0.2f, 0.4f, 1.0f }, true, 1.0f, false);
-		CHECK(Near(young.r, 0.2f) && Near(young.b, 1.0f));
-		const auto cooled = ColorOf(fire, { 1.0f, 0.4f, 0.1f }, true, 0.5f, true);
-		CHECK(cooled.b > cooled.r);
-	}
-
 	// ------------------------------------------------------------------ the overcharge on the spells (Overload.h)
 	void Overcharge()
 	{
@@ -812,7 +961,7 @@ namespace
 		CHECK(Near(Overload::Power(Phase::kBurnout, 1.0f, 1.0f, 1.0f), 1.0f));
 		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 0.0f), 1.0f));   // growth off: never bigger
 		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 50.0f), 3.0f));  // at most triple
-		// the burnout dip (his answer 2026-10-18, (c)): down at the start, whole again at the end, rising the whole way
+		// the burnout dip: down at the start, whole again at the end, rising the whole way
 		CHECK(Near(Overload::BurnoutDip(1.0f), Overload::kDipFloor));
 		CHECK(Near(Overload::BurnoutDip(0.0f), 1.0f));
 		CHECK(Near(Overload::BurnoutDip(0.5f), (1.0f + Overload::kDipFloor) / 2.0f));
@@ -962,9 +1111,22 @@ namespace
 	}
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	// the two settings files the package ships, as the plugin writes them for the built-in defaults: test_heat --write-menu
+	// <file> / --write-advanced <file> (binary, so the line ends are the plugin's own on every system)
+	if (argc > 2 && (std::string_view(argv[1]) == "--write-menu" || std::string_view(argv[1]) == "--write-advanced")) {
+		std::ofstream out(argv[2], std::ios::binary | std::ios::trunc);
+		if (std::string_view(argv[1]) == "--write-menu") {
+			Plugin::SettingsText::WriteMenu(out, Plugin::Settings{});
+		} else {
+			Plugin::SettingsText::WriteAdvanced(out, Plugin::Settings{});
+		}
+		return out ? 0 : 1;
+	}
 	Gains();
+	HeatBar();
+	Gates();
 	Stages();
 	Drain();
 	SchoolSwitch();
@@ -975,9 +1137,7 @@ int main()
 	SlowMagicka();
 	HandLights();
 	SettingsFile();
-	FlameBar();
 	Classifier();
-	SpellBars();
 	Overcharge();
 	ScorchMarks();
 	std::printf("%d passed, %d failed\n", gPassed, gFailed);

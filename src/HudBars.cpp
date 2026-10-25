@@ -2,22 +2,12 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The live spell bars on the HUD (Bar style "Spell bars", his order 2026-10-15 - BarFx.h has his words and the why of the
-// motion). Every look is the same bar:
-//   - the slot: a dark rounded bed with a thin rim in the spell's color;
-//   - the fill: the spell's OWN effect texture (SpellArt.cpp) tiled along the filled part in two layers flowing at different
-//     speeds against each other, fading out over a soft head; a built-in flowing noise strip when the spell has none;
-//   - round it, the particles of BarFx::Bar - born on the whole filled outline and carried by the flow field (the 360
-//     part): built-in sprites tinted in the spell's own color (a game particle sheet drew as boxy cards on a HUD quad -
-//     the note at the particle loop); shock adds arcs leaping round the frame;
-//   - a flare at the head; the stage's name over the right end.
-// Glowing layers are drawn ADDITIVELY, as the game draws its magic effects: an ImGui draw callback sets an additive blend
-// state (and a sampler that reads every mip, so a big game texture drawn small does not shimmer) for those draw commands,
-// and ImGui's own reset callback puts the framework's state back after them. Overdrive's power (Overload::Power) doubles
-// the particles' number, size and speed and the fill's flow; the cooldown cools everything to grey-blue and sputters.
-// Cost: one pass over at most BarFx::kMax particles, one textured quad each, through the framework's draw calls looked up
-// once; measured every frame (the Debug page, DevBench `look.drawUsAvg`).
-// Everything here runs on the render thread (the HUD element), except LookStatsNow and BenchForceLook.
+// The bars on the HUD: the Overdrive bar and, right above it, the thin Heat bar, each ONE quad painted by BarShader.h -
+// dark glass in a dark iron frame, the spell's own kind of effect inside, nothing can leave the frame and it stays sharp at
+// any size. The shader is compiled once on a worker thread (a first compile can stall a frame) and bound for each quad by an ImGui draw callback that
+// carries that quad's own numbers. Until it is ready - or on a PC without the compiler - a plain bar stands in, so the HUD
+// never shows nothing. The colors are the spell's own (SpellArt.cpp: its light, else its art) when they have a hue, else
+// the look's. Everything here runs on the render thread (the HUD element), except LookStatsNow and BenchForceLook.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
@@ -36,9 +26,14 @@
 #	pragma clang diagnostic pop
 #endif
 #pragma warning(pop)
-#include "BarFx.h"
+#include "BarShader.h"
 #include "HudBars.h"
 #include "Overload.h"
+
+#include <REX/W32/D3DCOMPILER.h>
+
+#include <cstring>
+#include <thread>
 
 namespace Plugin
 {
@@ -52,40 +47,36 @@ namespace Plugin
 		using ImGuiMCP::ImU32;
 		using ImGuiMCP::ImVec2;
 
-		constexpr std::string_view kFolder = "Data/SKSE/Plugins/SpellMasteryHeat/";
-		constexpr std::string_view kSheetFile = "BarSprites.dds";  // BarFx::Sprite's cells, 64 texels each, in one row
-		constexpr std::string_view kFillFile = "BarFill.dds";      // a flowing noise strip that tiles left to right
-		constexpr float            kHalfTexel = 0.5f / 512.0f;
-
-		// the framework's draw calls, looked up ONCE (its header looks each one up on every call)
-		using AddQuadFn = void (*)(ImDrawList*, ImTextureID, ImVec2, ImVec2, ImVec2, ImVec2, ImVec2, ImVec2, ImVec2, ImVec2, ImU32);
+		// the framework's calls, looked up ONCE (its header looks each one up by name on every call - a frame's worth of
+		// GetProcAddress for nothing)
 		using AddImageFn = void (*)(ImDrawList*, ImTextureID, ImVec2, ImVec2, ImVec2, ImVec2, ImU32);
 		using AddCallbackFn = void (*)(ImDrawList*, ImDrawCallback, void*);
-		using AddPolylineFn = void (*)(ImDrawList*, const ImVec2*, int, ImU32, ImGuiMCP::ImDrawFlags, float);
+		using AddTextFn = void (*)(ImDrawList*, const ImVec2, ImU32, const char*, const char*);
+		using AddRectFn = void (*)(ImDrawList*, const ImVec2, const ImVec2, ImU32, float, ImGuiMCP::ImDrawFlags);
+		using GetIOFn = ImGuiMCP::ImGuiIO* (*)();
+		using GetTimeFn = double (*)();
+		using GetListFn = ImDrawList* (*)();
 		struct Calls
 		{
-			AddQuadFn     quad{ nullptr };
 			AddImageFn    image{ nullptr };
 			AddCallbackFn callback{ nullptr };
-			AddPolylineFn polyline{ nullptr };
+			AddTextFn     text{ nullptr };
+			AddRectFn     rect{ nullptr };
+			GetIOFn       io{ nullptr };
+			GetTimeFn     time{ nullptr };
+			GetListFn     list{ nullptr };
 		};
 		const Calls& Fn()
 		{
-			static const Calls calls{ ::GetMenuFrameworkFunction<AddQuadFn>("ImDrawList_AddImageQuad"),
-				::GetMenuFrameworkFunction<AddImageFn>("ImDrawList_AddImage"), ::GetMenuFrameworkFunction<AddCallbackFn>("ImDrawList_AddCallback"),
-				::GetMenuFrameworkFunction<AddPolylineFn>("ImDrawList_AddPolyline") };
+			static const Calls calls{ ::GetMenuFrameworkFunction<AddImageFn>("ImDrawList_AddImage"),
+				::GetMenuFrameworkFunction<AddCallbackFn>("ImDrawList_AddCallback"), ::GetMenuFrameworkFunction<AddTextFn>("ImDrawList_AddText_Vec2"),
+				::GetMenuFrameworkFunction<AddRectFn>("ImDrawList_AddRectFilled"), ::GetMenuFrameworkFunction<GetIOFn>("igGetIO"),
+				::GetMenuFrameworkFunction<GetTimeFn>("igGetTime"), ::GetMenuFrameworkFunction<GetListFn>("igGetForegroundDrawList_Nil") };
 			return calls;
 		}
 
-		// ---- the additive state, made once on the device the HUD is drawn with
-		REX::W32::ID3D11BlendState*   gAdd{ nullptr };
-		REX::W32::ID3D11SamplerState* gSampler{ nullptr };
-		bool                          gStatesTried{ false };
-
 		// The head of ImGui's own DX11 backend data (ImGui_ImplDX11_Data in ImGui 1.90.8, the version SKSE Menu Framework 3 is
-		// built on): the device and the context every HUD draw is issued on. The blend state is made on and bound to THESE - the
-		// 2026-10-15 quick look on a frame-generation copy drew every "added" layer blended while the renderer's context took
-		// the state, so the renderer's pair is only the fallback.
+		// built on): the device and the context every HUD draw is issued on; the renderer's pair is only the fallback.
 		struct BackendHead
 		{
 			REX::W32::ID3D11Device*        device;
@@ -93,183 +84,310 @@ namespace Plugin
 		};
 		const BackendHead* Backend()
 		{
-			auto*       io = ImGuiMCP::GetIO();
+			auto*       io = Fn().io ? Fn().io() : nullptr;
 			const auto* head = io ? static_cast<const BackendHead*>(io->BackendRendererUserData) : nullptr;
 			return head && head->device && head->context ? head : nullptr;
 		}
-		REX::W32::ID3D11DeviceContext* RendererContext()
+		REX::W32::ID3D11DeviceContext* Context()
 		{
+			if (const auto* imgui = Backend()) {
+				return imgui->context;
+			}
 			auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
 			return renderer ? renderer->GetRuntimeData().context : nullptr;
 		}
 
-		void MakeStates()
-		{
-			if (gStatesTried) {
-				return;
-			}
-			gStatesTried = true;
-			const auto* imgui = Backend();
-			auto*       rendererDevice = RE::BSGraphics::Renderer::GetDevice();
-			auto*       rendererContext = RendererContext();
-			const char* verdict = "no HUD backend data - the renderer's are used";
-			if (imgui) {
-				verdict = imgui->device == rendererDevice && imgui->context == rendererContext ? "the same" : "DIFFERENT - the HUD's are used";
-			}
-			SKSE::log::info("spell bars: HUD device {} context {}, renderer device {} context {} ({})", imgui ? static_cast<const void*>(imgui->device) : nullptr,
-				imgui ? static_cast<const void*>(imgui->context) : nullptr, static_cast<const void*>(rendererDevice), static_cast<const void*>(rendererContext), verdict);
-			auto* device = imgui ? imgui->device : rendererDevice;
-			if (!device) {
-				SKSE::log::warn("spell bars: no graphics device - the glow is drawn blended instead of added");
-				return;
-			}
-			REX::W32::D3D11_BLEND_DESC bd{};
-			auto&                      rt = bd.renderTarget[0];
-			rt.blendEnable = 1;
-			rt.srcBlend = REX::W32::D3D11_BLEND_SRC_ALPHA;
-			rt.destBlend = REX::W32::D3D11_BLEND_ONE;
-			rt.blendOp = REX::W32::D3D11_BLEND_OP_ADD;
-			rt.srcBlendAlpha = REX::W32::D3D11_BLEND_ZERO;
-			rt.destBlendAlpha = REX::W32::D3D11_BLEND_ONE;
-			rt.blendOpAlpha = REX::W32::D3D11_BLEND_OP_ADD;
-			rt.renderTargetWriteMask = static_cast<std::uint8_t>(REX::W32::D3D11_COLOR_WRITE_ENABLE_ALL);
-			if (device->CreateBlendState(&bd, &gAdd) < 0) {
-				gAdd = nullptr;
-			}
-			REX::W32::D3D11_SAMPLER_DESC sd{};
-			sd.filter = REX::W32::D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-			sd.addressU = REX::W32::D3D11_TEXTURE_ADDRESS_WRAP;
-			sd.addressV = REX::W32::D3D11_TEXTURE_ADDRESS_WRAP;
-			sd.addressW = REX::W32::D3D11_TEXTURE_ADDRESS_WRAP;
-			sd.comparisonFunc = REX::W32::D3D11_COMPARISON_NEVER;
-			sd.minLOD = 0.0f;
-			sd.maxLOD = 3.402823466e+38f;
-			if (device->CreateSamplerState(&sd, &gSampler) < 0) {
-				gSampler = nullptr;
-			}
-			SKSE::log::info("spell bars: additive glow {}, mip sampler {}", gAdd ? "made" : "NOT made", gSampler ? "made" : "NOT made");
-		}
-
-		// ---- the blend measurement (2026-10-16 night): the "added" layers keep coming out blended on his Bottled Shaders copy
-		// (pixels round the bars lose a channel - added light never can). These count whether the callbacks run at all, whether
-		// our blend state is still bound when the glow is done, and which render target the HUD is drawn into (its size,
-		// format, and whether it is the swap chain's back buffer or a separate UI buffer - frame generation's). DevBench
-		// `look.blend`.
-		std::atomic<std::uint32_t> gAddCalls{ 0 }, gProbeCalls{ 0 }, gKeptAdd{ 0 };
-		std::atomic<std::uint32_t> gRtWidth{ 0 }, gRtHeight{ 0 }, gRtFormat{ 0 };
-		std::atomic<int>           gRtIsBack{ -1 };  // 1 the back buffer, 0 another target, -1 not read, -2 no target bound
-
-		void ReadTarget(REX::W32::ID3D11DeviceContext* a_ctx)
-		{
-			REX::W32::ID3D11RenderTargetView* rtv{ nullptr };
-			a_ctx->OMGetRenderTargets(1, &rtv, nullptr);
-			if (!rtv) {
-				gRtIsBack = -2;
-				return;
-			}
-			REX::W32::ID3D11Resource* res{ nullptr };
-			rtv->GetResource(&res);
-			if (res) {
-				REX::W32::D3D11_RESOURCE_DIMENSION dim{};
-				res->GetType(&dim);
-				if (dim == REX::W32::D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-					REX::W32::D3D11_TEXTURE2D_DESC desc{};
-					static_cast<REX::W32::ID3D11Texture2D*>(res)->GetDesc(&desc);
-					gRtWidth = desc.width;
-					gRtHeight = desc.height;
-					gRtFormat = static_cast<std::uint32_t>(desc.format);
-				}
-				int   isBack = 0;
-				auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-				auto* view = renderer ? renderer->GetRuntimeData().renderWindows[0].renderView : nullptr;
-				if (view) {
-					REX::W32::ID3D11Resource* back{ nullptr };
-					view->GetResource(&back);
-					isBack = back == res ? 1 : 0;
-					if (back) {
-						back->Release();
-					}
-				}
-				gRtIsBack = isBack;
-				res->Release();
-			}
-			rtv->Release();
-		}
-
-		void Additive(const ImDrawList*, const ImDrawCmd*)
-		{
-			const auto* imgui = Backend();
-			auto*       ctx = imgui ? imgui->context : RendererContext();
-			gAddCalls.fetch_add(1, std::memory_order_relaxed);
-			if (!ctx) {
-				return;
-			}
-			if (gAdd) {
-				constexpr float kFactor[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
-				ctx->OMSetBlendState(gAdd, kFactor, 0xFFFFFFFFu);
-			}
-			if (gSampler) {
-				ctx->PSSetSamplers(0, 1, &gSampler);
-			}
-			ReadTarget(ctx);
-		}
-
-		// placed after the last added layer, before ImGui's reset: is our blend state still the bound one?
-		void Probe(const ImDrawList*, const ImDrawCmd*)
-		{
-			gProbeCalls.fetch_add(1, std::memory_order_relaxed);
-			const auto* imgui = Backend();
-			auto*       ctx = imgui ? imgui->context : RendererContext();
-			if (!ctx) {
-				return;
-			}
-			REX::W32::ID3D11BlendState* bound{ nullptr };
-			float                       factor[4]{};
-			std::uint32_t               mask{ 0 };
-			ctx->OMGetBlendState(&bound, factor, &mask);
-			if (bound && bound == gAdd) {
-				gKeptAdd.fetch_add(1, std::memory_order_relaxed);
-			}
-			if (bound) {
-				bound->Release();
-			}
-		}
-
-		// ImGui's own "put the renderer's state back" mark (ImDrawCallback_ResetRenderState, -8 in ImGui 1.90.8, the version
-		// SKSE Menu Framework 3 is built on - its DX11 backend checks for it before calling a callback)
+		// ImGui's own "put the renderer's state back" mark (ImDrawCallback_ResetRenderState, -8 in ImGui 1.90.8 - its DX11
+		// backend checks for it before calling a callback)
 		ImDrawCallback ResetState() { return reinterpret_cast<ImDrawCallback>(static_cast<std::intptr_t>(-8)); }
 
-		// ---- the built-in textures, loaded once
-		struct Builtin
+		using CompileFn = std::int32_t (*)(const void*, std::size_t, const char*, const void*, void*, const char*, const char*, std::uint32_t, std::uint32_t,
+			REX::W32::ID3DBlob**, REX::W32::ID3DBlob**);
+
+		REX::W32::ID3D11PixelShader* gPs{ nullptr };
+		REX::W32::ID3D11Buffer*      gCb{ nullptr };
+		REX::W32::ID3D11BlendState*  gPremul{ nullptr };
+		REX::W32::ID3D11Buffer*      gSavedCb{ nullptr };  // ImGui's backend does not restore pixel shader constant buffers
+		std::atomic<int>             gShaderState{ 0 };    // 0 not asked, 1 compiling, 2 ready, 3 failed
+		std::atomic<float>           gShaderMs{ 0.0f };
+		std::atomic<std::uint32_t>   gShaderCalls{ 0 };
+		// each quad's numbers, read by its own bind callback when ImGui renders the frame (after DrawBars has returned)
+		BarShaderConstants gBar{}, gStrip{};
+		constexpr double   kClockWrap = 2048.0;  // s: the clocks start over about every half hour - one jump of the pattern
+
+		void CompileShader(REX::W32::ID3D11Device* a_device)
 		{
-			ImTextureID sheet{ nullptr }, fill{ nullptr };
-			bool        tried{ false };
-		};
-		Builtin& Textures()
-		{
-			static Builtin b;
-			if (!b.tried) {
-				b.tried = true;
-				for (const auto [file, slot] : { std::pair{ kSheetFile, &b.sheet }, std::pair{ kFillFile, &b.fill } }) {
-					const auto path = std::string(kFolder) + std::string(file);
-					const auto t0 = Steady::now();
-					*slot = SKSEMenuFramework::LoadTexture(path);
-					const float ms = std::chrono::duration<float, std::milli>(Steady::now() - t0).count();
-					SKSE::log::info("spell bars: {} {} ({:.1f} ms)", path, *slot ? "loaded" : "could NOT be loaded", ms);
-				}
+			const auto t0 = Steady::now();
+			const auto fail = [](std::string_view a_why) {
+				SKSE::log::warn("bars: {} - a plain bar stands in", a_why);
+				gShaderState.store(3, std::memory_order_release);
+			};
+			// loaded by hand, so a PC without the compiler only loses the look instead of the whole plugin failing to load
+			auto*      lib = REX::W32::LoadLibraryW(L"d3dcompiler_47.dll");
+			const auto compile = lib ? reinterpret_cast<CompileFn>(REX::W32::GetProcAddress(lib, "D3DCompile")) : nullptr;
+			if (!compile) {
+				fail("d3dcompiler_47.dll could not be loaded");
+				return;
 			}
-			return b;
+			REX::W32::ID3DBlob* code{ nullptr };
+			REX::W32::ID3DBlob* errors{ nullptr };
+			const auto          hr = compile(kBarShader.data(), kBarShader.size(), "ArcaneOverdriveBar", nullptr, nullptr, "main", "ps_5_0",
+				static_cast<std::uint32_t>(REX::W32::D3DCOMPILE_OPTIMIZATION_LEVEL3), 0, &code, &errors);
+			if (errors) {
+				SKSE::log::info("bars, the shader compiler: {}", std::string_view(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()));
+				errors->Release();
+			}
+			if (hr < 0 || !code) {
+				if (code) {
+					code->Release();
+				}
+				fail(std::format("the shader did not compile ({:#x})", static_cast<std::uint32_t>(hr)));
+				return;
+			}
+			const bool shader = a_device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &gPs) >= 0;
+			code->Release();
+			REX::W32::D3D11_BUFFER_DESC bd{};
+			bd.byteWidth = sizeof(BarShaderConstants);
+			bd.usage = REX::W32::D3D11_USAGE_DYNAMIC;
+			bd.bindFlags = static_cast<std::uint32_t>(REX::W32::D3D11_BIND_CONSTANT_BUFFER);
+			bd.cpuAccessFlags = static_cast<std::uint32_t>(REX::W32::D3D11_CPU_ACCESS_WRITE);
+			const bool                 buffer = a_device->CreateBuffer(&bd, nullptr, &gCb) >= 0;
+			REX::W32::D3D11_BLEND_DESC bl{};
+			auto&                      rt = bl.renderTarget[0];
+			rt.blendEnable = 1;
+			rt.srcBlend = REX::W32::D3D11_BLEND_ONE;
+			rt.destBlend = REX::W32::D3D11_BLEND_INV_SRC_ALPHA;
+			rt.blendOp = REX::W32::D3D11_BLEND_OP_ADD;
+			rt.srcBlendAlpha = REX::W32::D3D11_BLEND_ONE;
+			rt.destBlendAlpha = REX::W32::D3D11_BLEND_INV_SRC_ALPHA;
+			rt.blendOpAlpha = REX::W32::D3D11_BLEND_OP_ADD;
+			rt.renderTargetWriteMask = static_cast<std::uint8_t>(REX::W32::D3D11_COLOR_WRITE_ENABLE_ALL);
+			const bool blend = a_device->CreateBlendState(&bl, &gPremul) >= 0;
+			if (!shader || !buffer || !blend) {
+				fail(std::format("the device refused it (shader {}, constants {}, blend {})", shader, buffer, blend));
+				return;
+			}
+			gShaderMs = std::chrono::duration<float, std::milli>(Steady::now() - t0).count();
+			SKSE::log::info("bars: the shader compiled and made in {:.0f} ms", gShaderMs.load());
+			gShaderState.store(2, std::memory_order_release);
 		}
 
-		struct Uv
+		void Bind(const ImDrawList*, const ImDrawCmd* a_cmd)
 		{
-			float u0, v0, u1, v1;
+			auto*       ctx = Context();
+			const auto* numbers = a_cmd ? static_cast<const BarShaderConstants*>(a_cmd->UserCallbackData) : nullptr;
+			if (!ctx || !numbers || gShaderState.load(std::memory_order_acquire) != 2) {
+				return;
+			}
+			REX::W32::D3D11_MAPPED_SUBRESOURCE mapped{};
+			if (ctx->Map(gCb, 0, REX::W32::D3D11_MAP_WRITE_DISCARD, 0, &mapped) >= 0 && mapped.data) {
+				std::memcpy(mapped.data, numbers, sizeof(BarShaderConstants));
+				ctx->Unmap(gCb, 0);
+			}
+			ctx->PSGetConstantBuffers(0, 1, &gSavedCb);
+			ctx->PSSetShader(gPs, nullptr, 0);
+			ctx->PSSetConstantBuffers(0, 1, &gCb);
+			constexpr float kFactor[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+			ctx->OMSetBlendState(gPremul, kFactor, 0xFFFFFFFFu);
+			gShaderCalls.fetch_add(1, std::memory_order_relaxed);
+		}
+
+		void Unbind(const ImDrawList*, const ImDrawCmd*)
+		{
+			if (auto* ctx = Context()) {
+				ctx->PSSetConstantBuffers(0, 1, &gSavedCb);
+			}
+			if (gSavedCb) {
+				gSavedCb->Release();
+				gSavedCb = nullptr;
+			}
+		}
+
+		// The bars' own GPU time, only while DevBench asks for it (set=gpu value=1): two timestamps round our quads, read back
+		// frames later without waiting (four clocks in turn, so the GPU is never stalled for them).
+		struct GpuClock
+		{
+			REX::W32::ID3D11Query* disjoint{ nullptr };
+			REX::W32::ID3D11Query* begin{ nullptr };
+			REX::W32::ID3D11Query* end{ nullptr };
+			bool                   pending{ false };
 		};
-		Uv Cell(BarFx::Sprite a_s)
+		std::atomic<bool>       gGpuWanted{ false };
+		std::atomic<float>      gGpuUs{ -1.0f };
+		std::array<GpuClock, 4> gClocks{};
+		std::size_t             gClockNext = 0;
+		GpuClock*               gClockRunning = nullptr;
+
+		bool MakeClock(GpuClock& a_c)
 		{
-			const float i = static_cast<float>(static_cast<int>(a_s));
-			const float n = static_cast<float>(BarFx::kSpriteCells);
-			return { i / n + kHalfTexel, 0.004f, (i + 1.0f) / n - kHalfTexel, 0.996f };
+			const auto* imgui = Backend();
+			auto*       device = imgui ? imgui->device : RE::BSGraphics::Renderer::GetDevice();
+			if (!device) {
+				return false;
+			}
+			REX::W32::D3D11_QUERY_DESC qd{ REX::W32::D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+			if (!a_c.disjoint && device->CreateQuery(&qd, &a_c.disjoint) < 0) {
+				return false;
+			}
+			qd.query = REX::W32::D3D11_QUERY_TIMESTAMP;
+			return (a_c.begin || device->CreateQuery(&qd, &a_c.begin) >= 0) && (a_c.end || device->CreateQuery(&qd, &a_c.end) >= 0);
+		}
+
+		void ClockStart(const ImDrawList*, const ImDrawCmd*)
+		{
+			auto* ctx = Context();
+			auto& c = gClocks[gClockNext];
+			if (!ctx || c.pending || !MakeClock(c)) {
+				return;
+			}
+			ctx->Begin(c.disjoint);
+			ctx->End(c.begin);
+			gClockRunning = &c;
+			gClockNext = (gClockNext + 1) % gClocks.size();
+		}
+
+		void ClockStop(const ImDrawList*, const ImDrawCmd*)
+		{
+			auto* ctx = Context();
+			if (!ctx || !gClockRunning) {
+				return;
+			}
+			ctx->End(gClockRunning->end);
+			ctx->End(gClockRunning->disjoint);
+			gClockRunning->pending = true;
+			gClockRunning = nullptr;
+		}
+
+		// the clock switched off: its queries are let go (render thread, where they are used), and a reading never comes back stale
+		void DropClocks()
+		{
+			for (auto& c : gClocks) {
+				for (auto* q : { &c.disjoint, &c.begin, &c.end }) {
+					if (*q) {
+						(*q)->Release();
+						*q = nullptr;
+					}
+				}
+				c.pending = false;
+			}
+			gClockRunning = nullptr;
+		}
+
+		// a finished clock's reading, never waiting (D3D11_ASYNC_GETDATA_DONOTFLUSH)
+		void ReadClocks()
+		{
+			auto* ctx = Context();
+			if (!ctx) {
+				return;
+			}
+			constexpr auto kNoFlush = static_cast<std::uint32_t>(REX::W32::D3D11_ASYNC_GETDATA_DONOTFLUSH);
+			for (auto& c : gClocks) {
+				REX::W32::D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+				std::uint64_t                                 a = 0, b = 0;
+				if (!c.pending || ctx->GetData(c.disjoint, &dj, sizeof(dj), kNoFlush) != 0 || ctx->GetData(c.begin, &a, sizeof(a), kNoFlush) != 0 ||
+					ctx->GetData(c.end, &b, sizeof(b), kNoFlush) != 0) {
+					continue;
+				}
+				c.pending = false;
+				if (!dj.disjoint && dj.frequency && b >= a) {
+					const float us = static_cast<float>(static_cast<double>(b - a) / static_cast<double>(dj.frequency) * 1e6);
+					const float avg = gGpuUs.load();
+					gGpuUs = avg < 0.0f ? us : avg + (us - avg) * 0.05f;
+				}
+			}
+		}
+
+		struct Rgb
+		{
+			float r, g, b;
+		};
+		struct Ramp
+		{
+			Rgb core, mid, deep;
+		};
+
+		// the look's own colors - the spell's replace them when they have a hue; healing and sun keep their gold (his "make the
+		// healing more gold and bright")
+		Ramp LookRamp(SpellLook::Look a_look)
+		{
+			using L = SpellLook::Look;
+			switch (a_look) {
+			case L::kFire:
+				return { { 1.0f, 0.86f, 0.48f }, { 1.0f, 0.45f, 0.08f }, { 0.6f, 0.07f, 0.02f } };
+			case L::kFrost:
+				return { { 0.86f, 0.96f, 1.0f }, { 0.38f, 0.72f, 1.0f }, { 0.05f, 0.16f, 0.48f } };
+			case L::kShock:
+				return { { 0.93f, 0.9f, 1.0f }, { 0.58f, 0.48f, 1.0f }, { 0.22f, 0.08f, 0.5f } };
+			case L::kAbsorbHealth:
+				return { { 1.0f, 0.78f, 0.75f }, { 0.9f, 0.12f, 0.12f }, { 0.35f, 0.02f, 0.04f } };
+			case L::kAbsorbMagicka:
+				return { { 0.8f, 0.9f, 1.0f }, { 0.2f, 0.45f, 1.0f }, { 0.04f, 0.08f, 0.4f } };
+			case L::kAbsorbStamina:
+				return { { 0.85f, 1.0f, 0.8f }, { 0.25f, 0.85f, 0.25f }, { 0.04f, 0.3f, 0.06f } };
+			case L::kHealing:
+				return { { 1.0f, 0.96f, 0.78f }, { 1.0f, 0.75f, 0.27f }, { 0.7f, 0.43f, 0.08f } };
+			case L::kIllusion:
+				return { { 0.95f, 0.85f, 1.0f }, { 0.7f, 0.35f, 1.0f }, { 0.25f, 0.05f, 0.4f } };
+			case L::kConjuration:
+				return { { 0.9f, 0.75f, 1.0f }, { 0.55f, 0.2f, 0.9f }, { 0.12f, 0.02f, 0.22f } };
+			case L::kBound:
+				return { { 0.85f, 0.95f, 1.0f }, { 0.35f, 0.65f, 1.0f }, { 0.05f, 0.12f, 0.4f } };
+			case L::kAlteration:
+				return { { 1.0f, 0.97f, 0.85f }, { 0.95f, 0.8f, 0.5f }, { 0.35f, 0.25f, 0.12f } };
+			case L::kSun:
+				return { { 1.0f, 1.0f, 0.92f }, { 1.0f, 0.85f, 0.45f }, { 0.6f, 0.38f, 0.08f } };
+			case L::kPoison:
+				return { { 0.85f, 1.0f, 0.6f }, { 0.35f, 0.8f, 0.15f }, { 0.06f, 0.25f, 0.03f } };
+			default:
+				return { { 0.85f, 0.8f, 1.0f }, { 0.55f, 0.45f, 1.0f }, { 0.18f, 0.1f, 0.45f } };
+			}
+		}
+
+		Ramp RampOf(SpellLook::Look a_look, const SpellArtView* a_spell)
+		{
+			using L = SpellLook::Look;
+			if (a_spell && a_look != L::kHealing && a_look != L::kSun) {
+				const float hi = std::max({ a_spell->r, a_spell->g, a_spell->b });
+				const float lo = std::min({ a_spell->r, a_spell->g, a_spell->b });
+				if (hi > 0.05f && (hi - lo) / hi >= 0.25f) {  // a grey smoke texture has no hue to build on
+					const Rgb c{ a_spell->r, a_spell->g, a_spell->b };
+					return { { c.r + (1.0f - c.r) * 0.55f, c.g + (1.0f - c.g) * 0.55f, c.b + (1.0f - c.b) * 0.55f }, c, { c.r * 0.35f, c.g * 0.35f, c.b * 0.35f } };
+				}
+			}
+			return LookRamp(a_look);
+		}
+
+		BarLook ShaderLook(SpellLook::Look a_look)
+		{
+			using L = SpellLook::Look;
+			switch (a_look) {
+			case L::kFire:
+				return BarLook::kFire;
+			case L::kFrost:
+				return BarLook::kFrost;
+			case L::kShock:
+				return BarLook::kShock;
+			case L::kAbsorbHealth:
+			case L::kAbsorbMagicka:
+			case L::kAbsorbStamina:
+				return BarLook::kEssence;
+			case L::kHealing:
+				return BarLook::kHealing;
+			case L::kIllusion:
+				return BarLook::kIllusion;
+			case L::kConjuration:
+				return BarLook::kConjuration;
+			case L::kBound:
+				return BarLook::kBound;
+			case L::kAlteration:
+				return BarLook::kAlteration;
+			case L::kSun:
+				return BarLook::kSun;
+			case L::kPoison:
+				return BarLook::kPoison;
+			default:
+				return BarLook::kGeneric;
+			}
 		}
 
 		ImU32 Col(float a_r, float a_g, float a_b, float a_a)
@@ -279,8 +397,7 @@ namespace Plugin
 		}
 
 		// ---- the bench and the numbers
-		std::atomic<int>   gForced{ -1 }, gShown{ -1 }, gParticles{ 0 }, gArcs{ 0 };
-		std::atomic<bool>  gBody{ false }, gFillOwn{ false }, gSprites{ false };
+		std::atomic<int>   gForced{ -1 }, gShown{ -1 };
 		std::atomic<float> gDrawUsAvg{ 0.0f }, gDrawUsMax{ 0.0f };
 
 		void Measure(Steady::time_point a_start)
@@ -291,7 +408,7 @@ namespace Plugin
 			gDrawUsMax = std::max(gDrawUsMax.load(), us);
 		}
 
-		// the render thread's copy of the spell's art, taken only when SpellArt.cpp published a new one
+		// the render thread's copy of the spell's colors, taken only when SpellArt.cpp published a new one
 		const SpellArtView& ArtNow()
 		{
 			static SpellArtView  art;
@@ -303,209 +420,149 @@ namespace Plugin
 			return art;
 		}
 
-		// a quad turned by a_angle about (a_cx, a_cy), a_w by a_h
-		void Quad(const Calls& a_fn, ImDrawList* a_dl, ImTextureID a_tex, float a_cx, float a_cy, float a_w, float a_h, float a_angle, const Uv& a_uv, ImU32 a_col)
+		void Fill(BarShaderConstants& a_c, float a_qw, float a_qh, float a_frame, float a_radius, float a_t, float a_fill, float a_heat, float a_power,
+			BarLook a_look, float a_phase, float a_fade, float a_sputter, const Ramp& a_ramp)
 		{
-			const float c = std::cos(a_angle), s = std::sin(a_angle);
-			const float hx = a_w * 0.5f, hy = a_h * 0.5f;
-			const auto  at = [&](float a_x, float a_y) { return ImVec2{ a_cx + a_x * c - a_y * s, a_cy + a_x * s + a_y * c }; };
-			a_fn.quad(a_dl, a_tex, at(-hx, -hy), at(hx, -hy), at(hx, hy), at(-hx, hy), ImVec2{ a_uv.u0, a_uv.v0 }, ImVec2{ a_uv.u1, a_uv.v0 },
-				ImVec2{ a_uv.u1, a_uv.v1 }, ImVec2{ a_uv.u0, a_uv.v1 }, a_col);
+			a_c = { { a_qw, a_qh, a_frame, a_radius }, { a_t, a_fill, a_heat, a_power }, { static_cast<float>(static_cast<int>(a_look)), a_phase, a_fade, a_sputter },
+				{ a_ramp.core.r, a_ramp.core.g, a_ramp.core.b, 0.0f }, { a_ramp.mid.r, a_ramp.mid.g, a_ramp.mid.b, 0.0f },
+				{ a_ramp.deep.r, a_ramp.deep.g, a_ramp.deep.b, 0.0f }, { a_t, 0.0f, 0.0f, 0.0f } };
 		}
 	}
 
-	bool DrawBars(ImDrawList* a_dl, const Settings& a_s, const MeterView& a_v, float a_alpha, float a_dt)
+	bool DrawBars(ImDrawList* a_dl, const Settings& a_s, const MeterView& a_v, float a_alpha, float)
 	{
 		const auto  start = Steady::now();
 		const auto& fn = Fn();
-		auto*       io = ImGuiMCP::GetIO();
-		if (!a_dl || !io || !fn.quad || !fn.image || !fn.callback) {
+		auto*       io = fn.io ? fn.io() : nullptr;
+		if (!a_dl || !io || !fn.text || !fn.rect || !fn.time) {
 			return false;
 		}
-		const auto& tex = Textures();
-		MakeStates();
-		gSprites = tex.sheet && tex.fill;
+		if (gGpuWanted.load(std::memory_order_relaxed)) {
+			ReadClocks();
+		} else if (gClocks[0].disjoint) {
+			DropClocks();
+		}
+		if (gShaderState.load(std::memory_order_acquire) == 0 && fn.image && fn.callback) {
+			const auto* imgui = Backend();
+			if (auto* device = imgui ? imgui->device : RE::BSGraphics::Renderer::GetDevice()) {
+				gShaderState.store(1, std::memory_order_release);
+				std::thread(CompileShader, device).detach();
+			}
+		}
 
-		// which look, and whose art: the spell's own unless the bench forced another kind
+		// which look, and whose colors: the spell's own unless the bench forced another kind
 		const int   forced = gForced.load(std::memory_order_relaxed);
 		const auto  look = forced >= 0 && forced < static_cast<int>(SpellLook::kLooks) ? static_cast<SpellLook::Look>(forced) : a_v.look;
-		const auto& prof = BarFx::ProfileOf(look);
 		const auto& art = ArtNow();
-		const bool  own = look == a_v.look && a_v.spell && art.form == a_v.spell->GetFormID();
-		const auto  body = own ? static_cast<ImTextureID>(art.body) : nullptr;
-		const auto  fillOwn = own ? static_cast<ImTextureID>(art.fill) : nullptr;
-		const auto  fillTex = fillOwn ? fillOwn : (body && art.frames.empty() ? body : tex.fill);
-		gBody = body != nullptr;
-		gFillOwn = fillOwn != nullptr || (body != nullptr && art.frames.empty());
-		const BarFx::Rgb spell{ art.r, art.g, art.b };
-		const bool       haveSpell = own && art.colored;
-		const BarFx::Rgb main = haveSpell ? spell : prof.core;
+		const bool  own = look == a_v.look && a_v.spell && art.form == a_v.spell->GetFormID() && art.colored;
+		const auto  ramp = RampOf(look, own ? &art : nullptr);
 
-		// where, and what the meter says
-		const float  k = std::clamp(a_s.barWidth, 0.5f, 3.0f);
-		const float  w = 240.0f * k, h = 10.0f * k;
-		const float  cx = io->DisplaySize.x * std::clamp(a_s.barX, 0.0f, 1.0f), y0 = io->DisplaySize.y * std::clamp(a_s.barY, 0.0f, 1.0f);
-		const float  x0 = cx - w * 0.5f;
-		const bool   overdrive = a_v.state == Heat::Meter::State::kOverdrive, burnout = a_v.state == Heat::Meter::State::kCooldown;
-		const float  left = a_v.timerOf > 0.0f ? std::clamp(a_v.timer / a_v.timerOf, 0.0f, 1.0f) : 0.0f;
-		const float  heat = std::clamp(a_v.heat / Heat::kFull, 0.0f, 1.0f);
-		const float  fill = overdrive || burnout ? left : heat;
-		const auto   phase = overdrive ? Overload::Phase::kOverdrive : burnout ? Overload::Phase::kBurnout :
-		                                                                         Overload::Phase::kBuilding;
-		const float  power = Overload::Power(phase, heat, left, 1.0f);  // the bar itself always doubles in Overdrive
-		const float  t = static_cast<float>(ImGuiMCP::GetTime());
-		BarFx::Drive drive;
-		drive.fill = fill;
-		drive.heat = overdrive ? 1.0f : burnout ? 0.25f :
-		                                          heat;
-		drive.power = power;
-		drive.burnout = burnout;
-		drive.w = w;
-		drive.h = h;
-		drive.k = k;
-		static BarFx::Bar      bar;
-		static SpellLook::Look lastLook = SpellLook::Look::kGeneric;
-		if (look != lastLook) {
-			bar.Clear();  // a new kind: its own particles, never the last kind's left drifting
-			lastLook = look;
-		}
-		bar.Step(prof, drive, a_dt, t);
+		// where, and what the bars say
+		const float k = std::clamp(a_s.barWidth, 0.5f, 3.0f);
+		const float w = 240.0f * k, h = 10.0f * k;
+		const float cx = io->DisplaySize.x * std::clamp(a_s.barX, 0.0f, 1.0f), y0 = io->DisplaySize.y * std::clamp(a_s.barY, 0.0f, 1.0f);
+		const float x0 = cx - w * 0.5f;
+		const bool  overdrive = a_v.state == Heat::Meter::State::kOverdrive, burnout = a_v.state == Heat::Meter::State::kCooldown;
+		const float left = a_v.timerOf > 0.0f ? std::clamp(a_v.timer / a_v.timerOf, 0.0f, 1.0f) : 0.0f;
+		const float heat = std::clamp(a_v.heat / Heat::kFull, 0.0f, 1.0f);
+		const float charge = std::clamp(a_v.charge / Heat::kFull, 0.0f, 1.0f);
+		const float fill = overdrive || burnout ? left : charge;  // the Overdrive bar; the heat drives how fierce it looks
+		const auto  phase = overdrive ? Overload::Phase::kOverdrive : burnout ? Overload::Phase::kBurnout :
+		                                                                        Overload::Phase::kBuilding;
+		const float power = Overload::Power(phase, charge, left, 1.0f);  // the bar itself always doubles in Overdrive
+		const float drive = overdrive ? 1.0f : burnout ? 0.25f :
+		                                                 heat;
+		// the shader's two clocks, kept small (a large time loses the float precision the noise needs): the plain clock, and the
+		// flow clock every motion runs on, advanced power times as fast so a change of power never jumps the motion
+		static double plainClock = 0.0, flowClock = 0.0, lastTime = -1.0;
+		const double  now = fn.time();
+		const double  step = lastTime < 0.0 ? 0.0 : std::clamp(now - lastTime, 0.0, 0.25);
+		lastTime = now;
+		plainClock = std::fmod(plainClock + step, kClockWrap);
+		flowClock = std::fmod(flowClock + step * power, kClockWrap);
+		const float t = static_cast<float>(plainClock);
 		const float alpha = std::clamp(a_alpha, 0.0f, 1.0f);
 		const float sputter = burnout && a_s.burnoutFlicker && !Overload::Shows(t, left, 0xBA5Eu) ? 0.15f : 1.0f;
-		const float fw = w * fill;
+		const bool  strip = !burnout && a_v.heat > 0.5f;
+		const float stripTop = y0 - kHeatStripAbove * k;
 
-		// 1 · the slot (blended): a dark bed, a thin rim in the spell's color
-		ImGuiMCP::ImDrawListManager::AddRectFilled(a_dl, ImVec2{ x0 - 3.0f * k, y0 - 3.0f * k }, ImVec2{ x0 + w + 3.0f * k, y0 + h + 3.0f * k },
-			Col(0.025f, 0.022f, 0.03f, 0.55f * alpha), 4.0f * k, 0);
-		ImGuiMCP::ImDrawListManager::AddRect(a_dl, ImVec2{ x0 - 3.0f * k, y0 - 3.0f * k }, ImVec2{ x0 + w + 3.0f * k, y0 + h + 3.0f * k },
-			burnout ? Col(0.45f, 0.5f, 0.6f, 0.45f * alpha) : Col(prof.edge.r * 0.8f + 0.1f, prof.edge.g * 0.8f + 0.1f, prof.edge.b * 0.8f + 0.1f, 0.5f * alpha),
-			4.0f * k, 0, std::max(1.0f, k));
-
-		const auto mainCol = [&](float a_mul, float a_a) {
-			if (burnout) {
-				return Col(0.42f * a_mul, 0.48f * a_mul, 0.6f * a_mul, a_a);
+		// the stage's name over the right end, over the Heat bar: READY / COLD / TOO HOT / FOCUS while a full bar waits
+		const auto label = [&] {
+			static constexpr const char* kNames[]{ "", "WARM", "HOT", "OVERHEATING", "OVERDRIVE", "BURNOUT" };
+			static constexpr const char* kGate[]{ "READY", "COLD", "TOO HOT", "FOCUS" };
+			const auto                   mood = burnout ? 5 : overdrive ? 4 :
+			                                                              std::clamp(static_cast<int>(a_v.stage), 0, 3);
+			const char*                  name = a_v.ready ? kGate[static_cast<std::size_t>(a_v.gate)] : kNames[static_cast<std::size_t>(mood)];
+			if (*name) {
+				const float  glint = a_v.ready ? 0.6f + 0.4f * std::sin(t * 6.0f) : 1.0f;
+				const ImVec2 size = ImGuiMCP::CalcTextSize(name);
+				const ImVec2 at{ x0 + w - size.x, stripTop - size.y - 3.0f * k };
+				const auto&  c = ramp.mid;
+				fn.text(a_dl, ImVec2{ at.x + 1.0f, at.y + 1.0f }, Col(0.0f, 0.0f, 0.0f, 0.8f * alpha), name, nullptr);
+				fn.text(a_dl, at, burnout ? Col(0.62f, 0.7f, 0.82f, glint * alpha) : Col(c.r * 0.5f + 0.5f, c.g * 0.5f + 0.5f, c.b * 0.5f + 0.5f, glint * alpha), name,
+					nullptr);
 			}
-			return Col(main.r * a_mul, main.g * a_mul, main.b * a_mul, a_a);
-		};
-		// one flowing texture layer along the filled part, fading out over a soft head
-		float ua = 0.0f, ub = 0.0f;
-		BarFx::FlowUv(t, prof.flow, power, ua, ub);
-		const auto fillLayer = [&](ImTextureID a_tex, float a_u, bool a_flip, float a_mul, float a_a) {
-			constexpr int kSoft = 8;
-			const float   span = h * 2.0f;  // the texture repeats every two bar heights
-			const float   soft = std::min(fw, h * 2.0f);
-			const float   body0 = fw - soft;
-			if (body0 > 0.5f) {
-				fn.image(a_dl, a_tex, ImVec2{ x0, y0 }, ImVec2{ x0 + body0, y0 + h }, ImVec2{ a_u, a_flip ? 1.0f : 0.0f },
-					ImVec2{ a_u + body0 / span, a_flip ? 0.0f : 1.0f }, mainCol(a_mul, a_a * alpha * sputter));
-			}
-			for (int i = 0; i < kSoft; ++i) {
-				const float s0 = body0 + soft * static_cast<float>(i) / kSoft, s1 = body0 + soft * static_cast<float>(i + 1) / kSoft;
-				const float fade = 1.0f - (static_cast<float>(i) + 0.5f) / kSoft;
-				fn.image(a_dl, a_tex, ImVec2{ x0 + s0, y0 }, ImVec2{ x0 + s1, y0 + h }, ImVec2{ a_u + s0 / span, a_flip ? 1.0f : 0.0f },
-					ImVec2{ a_u + s1 / span, a_flip ? 0.0f : 1.0f }, mainCol(a_mul, a_a * fade * alpha * sputter));
-			}
+			gShown = static_cast<int>(look);
+			Measure(start);
+			return true;
 		};
 
-		// 2 · the base fill (blended): the flowing strip in the spell's color, so how full the bar is reads on any background -
-		// added light alone washes out on snow (the in-game test 2026-10-15)
-		if (fw > 1.0f && tex.fill) {
-			fillLayer(tex.fill, ua * 0.5f, false, 0.85f, 0.7f);
+		// the shader: one quad for the Overdrive bar (3 px of frame round a 240 x 16 channel, standing on its floor) and one for the
+		// Heat strip (2 px round 240 x 4); any texture carries the quad - the shader reads none, so the font atlas does
+		const ImTextureID carrier = io->Fonts ? io->Fonts->TexID : nullptr;
+		if (gShaderState.load(std::memory_order_acquire) == 2 && carrier) {
+			const float qw = w + 6.0f * k, qh = 22.0f * k;
+			const float qx = x0 - 3.0f * k, qy = y0 + h + k - qh;
+			const float phaseNow = overdrive ? 1.0f : burnout ? 2.0f :
+			                                                    0.0f;
+			Fill(gBar, qw, qh, 3.0f * k, 6.0f * k, t, fill, drive, power, ShaderLook(look), phaseNow, alpha, sputter, ramp);
+			gBar.flow[0] = static_cast<float>(flowClock);
+			const bool clock = gGpuWanted.load(std::memory_order_relaxed);
+			if (clock) {
+				fn.callback(a_dl, ClockStart, nullptr);
+			}
+			fn.callback(a_dl, Bind, &gBar);
+			fn.image(a_dl, carrier, ImVec2{ qx, qy }, ImVec2{ qx + qw, qy + qh }, ImVec2{ 0.0f, 0.0f }, ImVec2{ 1.0f, 1.0f }, Col(1.0f, 1.0f, 1.0f, 1.0f));
+			fn.callback(a_dl, Unbind, nullptr);
+			if (strip) {
+				const float sh = 10.0f * k;
+				Fill(gStrip, qw, sh, 2.0f * k, 3.0f * k, t, heat, heat, 1.0f, BarLook::kHeatStrip, phaseNow, alpha, 1.0f, ramp);
+				gStrip.core[3] = a_v.bandLow / Heat::kFull;
+				gStrip.mid[3] = a_v.redLine / Heat::kFull;
+				gStrip.deep[3] = a_s.tuning.heatGate ? 1.0f : 0.0f;
+				fn.callback(a_dl, Bind, &gStrip);
+				fn.image(a_dl, carrier, ImVec2{ qx, stripTop }, ImVec2{ qx + qw, stripTop + sh }, ImVec2{ 0.0f, 0.0f }, ImVec2{ 1.0f, 1.0f }, Col(1.0f, 1.0f, 1.0f, 1.0f));
+				fn.callback(a_dl, Unbind, nullptr);
+			}
+			if (clock) {
+				fn.callback(a_dl, ClockStop, nullptr);
+			}
+			fn.callback(a_dl, ResetState(), nullptr);
+			return label();
 		}
 
-		// 3 · the glow and the spell's own texture flowing over it (added from here on)
-		fn.callback(a_dl, Additive, nullptr);
-		if (fw > 1.0f && tex.sheet) {
-			const float breath = overdrive ? 0.85f + 0.15f * std::sin(t * 10.0f) : 1.0f;
-			fn.image(a_dl, tex.sheet, ImVec2{ x0 - h * 1.5f, y0 - h * 1.6f }, ImVec2{ x0 + fw + h * 1.5f, y0 + h * 2.6f }, ImVec2{ Cell(BarFx::Sprite::kGlow).u0, 0.0f },
-				ImVec2{ Cell(BarFx::Sprite::kGlow).u1, 1.0f }, mainCol(1.0f, (0.18f + 0.22f * drive.heat) * breath * alpha * sputter));
+		// the stand-in while the shader compiles (or when it cannot): a plain bar in the same place, the spell's color
+		const auto& c = burnout ? Rgb{ 0.42f, 0.48f, 0.6f } : ramp.mid;
+		fn.rect(a_dl, ImVec2{ x0 - 3.0f * k, y0 - 3.0f * k }, ImVec2{ x0 + w + 3.0f * k, y0 + h + 3.0f * k }, Col(0.04f, 0.035f, 0.04f, 0.85f * alpha), 4.0f * k, 0);
+		fn.rect(a_dl, ImVec2{ x0, y0 }, ImVec2{ x0 + w * fill, y0 + h }, Col(c.r, c.g, c.b, 0.9f * alpha * sputter), 2.0f * k, 0);
+		if (strip) {
+			fn.rect(a_dl, ImVec2{ x0, stripTop }, ImVec2{ x0 + w * heat, stripTop + 4.0f * k }, a_v.redZone ? Col(1.0f, 0.14f, 0.05f, alpha) : Col(1.0f, 0.55f, 0.15f, 0.9f * alpha),
+				0.0f, 0);
 		}
-		if (fw > 1.0f && fillTex) {
-			fillLayer(fillTex, ua, false, 0.95f, 0.85f);
-			fillLayer(fillTex, ub, true, 0.7f, 0.55f);
-		}
-		// 4 · the particles, all round the bar
-		int alive = 0;
-		for (std::size_t i = 0; i < bar.All().size(); ++i) {
-			const auto& p = bar.All()[i];
-			if (!p.alive) {
-				continue;
-			}
-			++alive;
-			const float l = p.Left();
-			const float in = std::clamp(p.age * 8.0f, 0.0f, 1.0f);
-			const auto  c = BarFx::ColorOf(prof, spell, haveSpell, l, burnout);
-			const float a = in * std::pow(l, 0.8f) * alpha * sputter * (p.body ? 0.65f : 0.95f);
-			const float size = std::max(p.Size(), 0.5f);
-			const float px = x0 + p.x, py = y0 + p.y;
-			// Every particle - "body" ones included - wears one of OUR sprite cells, tinted in the spell's own color (BarFx::ColorOf).
-			// The spell's particle texture is NOT drawn here: measured 2026-10-15 on his Bottled Shaders order, a game particle sheet
-			// is a grey flipbook the game colors through a palette and adds as light, and the cells its model names need not match
-			// the winning texture's grid (Flames: 18 cells named, the winning sheet an 8 x 4 grid of 32) - on a HUD quad it drew as
-			// tilted tan cards (his "those flames look super boxy"). The spell's own art stays in the fill and the colors.
-			if (!tex.sheet) {
-				continue;
-			}
-			if (p.body) {  // a soft glow behind the body, so it reads on a bright background too
-				Quad(fn, a_dl, tex.sheet, px, py, size * 1.5f, size * 1.5f, 0.0f, Cell(BarFx::Sprite::kGlow), Col(c.r, c.g, c.b, a * 0.35f));
-			}
-			const auto sprite = p.body ? prof.bodySprite : (p.second ? prof.fleck2 : prof.fleck);
-			if (sprite == BarFx::Sprite::kStreak) {  // a streak is drawn along its flight
-				const float speed = std::sqrt(p.vx * p.vx + p.vy * p.vy);
-				Quad(fn, a_dl, tex.sheet, px, py, size * (1.5f + std::min(speed / (60.0f * k), 3.0f)), size * 0.45f, std::atan2(p.vy, p.vx), Cell(sprite),
-					Col(c.r, c.g, c.b, a));
-			} else {
-				Quad(fn, a_dl, tex.sheet, px, py, size, size, p.angle, Cell(sprite), Col(c.r, c.g, c.b, a));
-			}
-		}
+		return label();
+	}
 
-		// 5 · shock's arcs: a wide faint glow and a bright core
-		int arcs = 0;
-		if (fn.polyline) {
-			for (const auto& arc : bar.Arcs()) {
-				if (!arc.Alive()) {
-					continue;
-				}
-				++arcs;
-				std::array<ImVec2, BarFx::kArcPoints> pts{};
-				for (int i = 0; i < BarFx::kArcPoints; ++i) {
-					pts[static_cast<std::size_t>(i)] = ImVec2{ x0 + arc.pts[static_cast<std::size_t>(2 * i)], y0 + arc.pts[static_cast<std::size_t>(2 * i + 1)] };
-				}
-				const float fade = 1.0f - arc.age / std::max(arc.life, 0.001f);
-				fn.polyline(a_dl, pts.data(), BarFx::kArcPoints, Col(main.r, main.g, main.b, 0.35f * fade * alpha), 0, arc.width * 4.0f);
-				fn.polyline(a_dl, pts.data(), BarFx::kArcPoints, Col(0.95f, 0.95f, 1.0f, 0.95f * fade * alpha), 0, arc.width);
-			}
-		}
+	ImGuiMCP::ImGuiIO* HudIO() { return Fn().io ? Fn().io() : nullptr; }
 
-		// 6 · the head: a flare where the fill ends, bigger and breathing in Overdrive
-		if (fw > 1.0f && tex.sheet) {
-			const float breath = 0.8f + 0.2f * std::sin(t * (burnout ? 2.0f : 7.0f));
-			const float r = h * 2.2f * breath * (0.75f + 0.25f * power);
-			Quad(fn, a_dl, tex.sheet, x0 + fw, y0 + h * 0.5f, r * 2.0f, r * 2.0f, 0.0f, Cell(BarFx::Sprite::kGlow), mainCol(1.2f, 0.7f * alpha * sputter));
-			Quad(fn, a_dl, tex.sheet, x0 + fw, y0 + h * 0.5f, r * 0.7f, r * 0.7f, t * 0.7f, Cell(BarFx::Sprite::kStar), Col(1.0f, 1.0f, 1.0f, 0.6f * alpha * sputter));
-		}
-		fn.callback(a_dl, Probe, nullptr);
-		fn.callback(a_dl, ResetState(), nullptr);
+	ImGuiMCP::ImDrawList* HudList() { return Fn().list ? Fn().list() : nullptr; }
 
-		// 7 · the stage's name over the right end ("READY" while the key waits)
-		static constexpr const char* kNames[]{ "", "WARM", "HOT", "OVERHEATING", "OVERDRIVE", "BURNOUT" };
-		const auto                   mood = burnout ? 5 : overdrive ? 4 :
-		                                                              std::clamp(static_cast<int>(a_v.stage), 0, 3);
-		const char*                  name = a_v.ready ? "READY" : kNames[static_cast<std::size_t>(mood)];
-		if (*name) {
-			const float  glint = a_v.ready ? 0.6f + 0.4f * std::sin(t * 6.0f) : 1.0f;
-			const ImVec2 size = ImGuiMCP::CalcTextSize(name);
-			const ImVec2 at{ x0 + w - size.x, y0 - size.y - 5.0f * k };
-			ImGuiMCP::ImDrawListManager::AddText(a_dl, ImVec2{ at.x + 1.0f, at.y + 1.0f }, Col(0.0f, 0.0f, 0.0f, 0.8f * alpha), name);
-			ImGuiMCP::ImDrawListManager::AddText(a_dl, at,
-				burnout ? Col(0.62f, 0.7f, 0.82f, glint * alpha) : Col(main.r * 0.5f + 0.5f, main.g * 0.5f + 0.5f, main.b * 0.5f + 0.5f, glint * alpha), name);
-		}
-
-		gShown = static_cast<int>(look);
-		gParticles = alive;
-		gArcs = arcs;
-		Measure(start);
-		return true;
+	void BenchGpuClock(bool a_on)
+	{
+		gGpuWanted = a_on;
+		gGpuUs = -1.0f;
+		gDrawUsAvg = 0.0f;
+		gDrawUsMax = 0.0f;
+		ResetFrameCost();
 	}
 
 	LookStats LookStatsNow()
@@ -513,21 +570,13 @@ namespace Plugin
 		LookStats s;
 		s.shown = gShown.load();
 		s.forced = gForced.load();
-		s.spellBody = gBody.load();
-		s.spellFill = gFillOwn.load();
-		s.sprites = gSprites.load();
-		s.particles = gParticles.load();
-		s.arcs = gArcs.load();
 		s.drawUsAvg = gDrawUsAvg.load();
 		s.drawUsMax = gDrawUsMax.load();
-		s.addCalls = gAddCalls.load();
-		s.probeCalls = gProbeCalls.load();
-		s.keptAdd = gKeptAdd.load();
-		s.additiveMade = gAdd != nullptr;
-		s.rtWidth = gRtWidth.load();
-		s.rtHeight = gRtHeight.load();
-		s.rtFormat = gRtFormat.load();
-		s.rtIsBack = gRtIsBack.load();
+		s.shaderState = gShaderState.load();
+		s.shaderMs = gShaderMs.load();
+		s.shaderCalls = gShaderCalls.load();
+		s.gpuUs = gGpuUs.load();
+		s.gpuClock = gGpuWanted.load();
 		return s;
 	}
 

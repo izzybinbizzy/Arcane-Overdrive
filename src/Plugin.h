@@ -19,7 +19,9 @@ namespace Plugin
 	[[nodiscard]] Settings Config();
 	void                   SetConfig(const Settings& a_settings);
 	bool                   ApplySetting(std::string_view a_key, int a_value);
+	void                   ApplyPreset(std::size_t a_preset);  // SettingsText::kPresets
 	void                   LoadSettings();
+	bool                   ReloadAdvanced();  // the advanced file read again (a hand edit while the game runs)
 	void                   SaveSettings();
 
 	// ------------------------------------------------------------------ Spells.cpp: what a spell is to the meter
@@ -30,29 +32,46 @@ namespace Plugin
 		bool             held{ false };  // a concentration spell
 		int              element{ 0 };   // 0 none, 1 fire, 2 frost, 3 shock: the hand glow's color
 	};
-	[[nodiscard]] SpellInfo Read(const RE::MagicItem* a_item);
+	[[nodiscard]] SpellInfo     Read(const RE::MagicItem* a_item);
+	void                        NewReadFrame();  // main thread, each frame: Read's kept answers are from this frame on read afresh
+	[[nodiscard]] std::uint32_t ReadFrameNow();  // the frames counted so far (what is kept is kept by it)
 	// whether this effect's magnitude is boosted, by the Boost setting (damage only, or every hostile effect)
 	[[nodiscard]] bool Boosted(const RE::EffectSetting* a_effect, Heat::Boost a_boost);
 
 	// ------------------------------------------------------------------ Meters.cpp: the meters (the player's, and enemies')
-	void                OnCast(RE::Actor* a_caster, const RE::MagicItem* a_item);                                         // any thread: the game's spell cast event
-	void                Frame(float a_delta);                                                                             // main thread, every frame, from the player's update
-	[[nodiscard]] float Multiplier(RE::Actor* a_caster, const RE::MagicItem* a_item, const RE::EffectSetting* a_effect);  // any thread
-	void                ResetAll();                                                                                       // a game is loading
-	void                PressOverdriveKey();                                                                              // any thread: the key went down (acted on next frame, if the game is not in a menu)
-	// the bench (DevBench, the Debug page): the player's meter, on the next frame
+	void OnCast(RE::Actor* a_caster, const RE::MagicItem* a_item);  // any thread: the game's spell cast event
+	void Frame(float a_delta);                                      // main thread, every frame, from the player's update
+	struct FrameCost
+	{
+		float usAvg{ 0.0f }, usMax{ 0.0f };  // Frame's own time on the main thread, microseconds (about the last 20 frames; the worst since reset)
+	};
+	[[nodiscard]] FrameCost FrameCostNow();
+	void                    ResetFrameCost();
+	[[nodiscard]] float     Multiplier(RE::Actor* a_caster, const RE::MagicItem* a_item, const RE::EffectSetting* a_effect);  // any thread
+	void                    ResetAll();                                                                                       // a game is loading
+	void                    PressOverdriveKey();                                                                              // any thread: the key went down (acted on next frame, if the game is not in a menu)
+	void                    HoldOverdriveKey(bool a_down);                                                                    // any thread: the key held or let go (the focus gate)
+	// the bench (DevBench, the Debug page): the player's bars, on the next frame
+	void BenchSetCharge(float a_charge);
 	void BenchSetHeat(float a_heat);
 	void BenchForceStage(Heat::Stage a_stage);
 
 	struct MeterView
 	{
-		float                heat{ 0.0f };
+		float                charge{ 0.0f };  // the Overdrive bar, 0 to 100
+		float                heat{ 0.0f };    // the Heat bar, 0 to 100
 		Heat::Stage          stage{ Heat::Stage::kCold };
 		Heat::Meter::State   state{ Heat::Meter::State::kBuilding };
 		float                timer{ 0.0f }, timerOf{ 1.0f };  // Overdrive's or the cooldown's seconds left, and of how many
-		bool                 ready{ false };
+		bool                 ready{ false };                  // the Overdrive bar full, waiting for the gate or the key
+		Heat::GateNow        gate{ Heat::GateNow::kOpen };
+		float                bandLow{ 50.0f }, redLine{ 85.0f };  // the sweet spot on the Heat bar, for drawing it
+		bool                 redZone{ false };
+		float                focus{ 0.0f };    // the focus gate's hold so far, 0 to 1
+		float                misfire{ 0.0f };  // a misfire's flash, 1 as it happens down to 0
+		int                  misfires{ 0 };    // since the game was loaded
 		Heat::School         last{ Heat::School::kNone };
-		float                bonus{ 1.0f };                      // a spell of the last school's multiplier now
+		float                bonus{ 1.0f };                      // a spell's multiplier now
 		float                regen{ 1.0f };                      // magicka regeneration now, against normal
 		std::size_t          enemies{ 0 };                       // enemies with a meter of their own
 		std::uint64_t        boosted{ 0 };                       // effects boosted since the game started
@@ -68,40 +87,33 @@ namespace Plugin
 	[[nodiscard]] const RE::MagicItem* HeldSpell(RE::Actor* a_actor, const Settings& a_settings);
 	[[nodiscard]] const RE::MagicItem* EquippedSpell(RE::PlayerCharacter* a_player);  // the spell in the right hand, else the left
 
-	// ------------------------------------------------------------------ SpellArt.cpp: the spell's own art, for the spell bars
+	// ------------------------------------------------------------------ SpellArt.cpp: the spell's own color, for the bars
 	struct SpellArtView
 	{
-		std::uint32_t                     form{ 0 };         // the spell
-		void*                             body{ nullptr };   // its particle texture (the game's own texture view, which the HUD draws with), or none
-		void*                             fill{ nullptr };   // its other effect texture, the bar's fill, or none
-		std::vector<std::array<float, 4>> frames;            // the body texture's flipbook cells (u0 v0 u1 v1), none: the whole texture
-		bool                              colored{ false };  // the color below is the spell's own (its light's, else its art's)
-		float                             r{ 1.0f }, g{ 1.0f }, b{ 1.0f };
-		std::string                       bodyPath, fillPath;
+		std::uint32_t form{ 0 };         // the spell
+		bool          colored{ false };  // the color below is the spell's own (its light's, else its art's)
+		float         r{ 1.0f }, g{ 1.0f }, b{ 1.0f };
 	};
 	void                        NoteSpellArt(const RE::MagicItem* a_item);  // main thread, every frame (read once per spell)
 	void                        ForgetSpellArt();                           // a game is loading
 	[[nodiscard]] SpellArtView  SpellArtNow();                              // a copy, from any thread
 	[[nodiscard]] std::uint32_t SpellArtVersion();                          // changes with every new view (the HUD copies one only then)
 
-	// ------------------------------------------------------------------ HudBars.cpp: the live spell bars (BarFx.h)
+	// ------------------------------------------------------------------ HudBars.cpp: the high-res bars (BarShader.h)
 	struct LookStats
 	{
-		int   shown{ -1 };                             // the look last drawn (SpellLook::Look), -1 none yet
-		int   forced{ -1 };                            // the bench's choice, -1 the spell's own
-		bool  spellBody{ false }, spellFill{ false };  // drawn with the spell's own textures (else the built-in ones)
-		bool  sprites{ false };                        // the built-in sprite sheet and fill are loaded
-		int   particles{ 0 }, arcs{ 0 };               // alive in the last frame drawn
-		float drawUsAvg{ 0.0f }, drawUsMax{ 0.0f };    // our part of a frame on the render thread, microseconds
-		// the blend measurement (HudBars.cpp): callbacks run since the game started, our blend state still bound at the end of
-		// the added layers, and the render target the HUD is drawn into
-		std::uint32_t addCalls{ 0 }, probeCalls{ 0 }, keptAdd{ 0 };
-		bool          additiveMade{ false };
-		std::uint32_t rtWidth{ 0 }, rtHeight{ 0 }, rtFormat{ 0 };
-		int           rtIsBack{ -1 };  // 1 the swap chain's back buffer, 0 another target, -1 not read, -2 none bound
+		int           shown{ -1 };                           // the look last drawn (SpellLook::Look), -1 none yet
+		int           forced{ -1 };                          // the bench's choice, -1 the spell's own
+		float         drawUsAvg{ 0.0f }, drawUsMax{ 0.0f };  // our part of a frame on the render thread, microseconds
+		int           shaderState{ 0 };                      // 0 not asked yet, 1 compiling, 2 drawing, 3 failed (a plain bar stands in)
+		float         shaderMs{ 0.0f };                      // its compile time
+		std::uint32_t shaderCalls{ 0 };                      // its draws so far
+		float         gpuUs{ -1.0f };                        // the bars' GPU time a frame, microseconds (-1 until the clock is on)
+		bool          gpuClock{ false };                     // the GPU clock is on (DevBench set=gpu, the Debug page)
 	};
 	[[nodiscard]] LookStats LookStatsNow();
 	void                    BenchForceLook(int a_look);  // the Debug page and DevBench: show this look whatever the spell (-1: the spell's own)
+	void                    BenchGpuClock(bool a_on);    // DevBench: time the bars on the GPU (and start every cost reading afresh)
 
 	// ------------------------------------------------------------------ Overload.cpp: the overcharge on the spells themselves
 	void                UpdateOverload(const MeterView& a_v, const Settings& a_s, float a_dt);  // main thread, every frame, before the hands

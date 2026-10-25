@@ -101,44 +101,81 @@ namespace Plugin
 				return 0;
 			}
 		}
+
+		SpellInfo ReadNow(const RE::MagicItem* a_item)
+		{
+			SpellInfo   info;
+			const auto* effect = MainEffect(a_item);
+			if (!a_item || !effect) {
+				info.facts.kind = Heat::SpellFacts::Kind::kOther;
+				return info;
+			}
+			using T = RE::MagicSystem::SpellType;
+			using K = Heat::SpellFacts::Kind;
+			switch (a_item->GetSpellType()) {
+			case T::kSpell:
+				info.facts.kind = K::kSpell;
+				break;
+			case T::kStaffEnchantment:
+				info.facts.kind = K::kStaff;
+				break;
+			case T::kScroll:
+				info.facts.kind = K::kScroll;
+				break;
+			case T::kPower:
+			case T::kLesserPower:
+			case T::kVoicePower:
+				info.facts.kind = K::kPower;
+				break;
+			default:
+				info.facts.kind = K::kOther;
+				break;
+			}
+			const bool harmful = effect->IsHostile() || effect->IsDetrimental();
+			const bool healing = !harmful && ((ChangesValue(effect) && OnHealth(effect)) || Has(effect, "MagicRestoreHealth"));
+			const bool ward = effect->data.primaryAV == RE::ActorValue::kWardPower || Has(effect, "MagicWard");
+			info.facts.healingOrWard = healing || ward;
+			info.school = SchoolOf(effect);
+			info.held = a_item->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
+			info.element = ElementOf(effect);
+			return info;
+		}
 	}
+
+	namespace
+	{
+		std::atomic<std::uint32_t> gReadFrame{ 0 };
+	}
+
+	void NewReadFrame() { gReadFrame.fetch_add(1, std::memory_order_relaxed); }
+
+	std::uint32_t ReadFrameNow() { return gReadFrame.load(std::memory_order_relaxed); }
 
 	SpellInfo Read(const RE::MagicItem* a_item)
 	{
-		SpellInfo   info;
-		const auto* effect = MainEffect(a_item);
-		if (!a_item || !effect) {
-			info.facts.kind = Heat::SpellFacts::Kind::kOther;
-			return info;
+		// the same few spells are read many times a frame (both hands, the held spell, the hand lights): the last four read on
+		// this thread are kept for the frame they were read in, so a spell another mod changes is read afresh the next frame
+		struct Kept
+		{
+			const RE::MagicItem* item{ nullptr };
+			RE::FormID           id{ 0 };
+			std::uint32_t        frame{ 0 };
+			SpellInfo            info;
+		};
+		thread_local std::array<Kept, 4> kept{};
+		thread_local std::size_t         next = 0;
+		const RE::FormID                 id = a_item ? a_item->GetFormID() : 0;
+		const std::uint32_t              frame = gReadFrame.load(std::memory_order_relaxed);
+		for (const auto& k : kept) {
+			if (k.item && k.item == a_item && k.id == id && k.frame == frame) {
+				return k.info;
+			}
 		}
-		using T = RE::MagicSystem::SpellType;
-		using K = Heat::SpellFacts::Kind;
-		switch (a_item->GetSpellType()) {
-		case T::kSpell:
-			info.facts.kind = K::kSpell;
-			break;
-		case T::kStaffEnchantment:
-			info.facts.kind = K::kStaff;
-			break;
-		case T::kScroll:
-			info.facts.kind = K::kScroll;
-			break;
-		case T::kPower:
-		case T::kLesserPower:
-		case T::kVoicePower:
-			info.facts.kind = K::kPower;
-			break;
-		default:
-			info.facts.kind = K::kOther;
-			break;
+		const auto info = ReadNow(a_item);
+		if (a_item) {
+			kept[next] = { a_item, id, frame, info };
+			next = (next + 1) % kept.size();
 		}
-		const bool harmful = effect->IsHostile() || effect->IsDetrimental();
-		const bool healing = !harmful && ((ChangesValue(effect) && OnHealth(effect)) || Has(effect, "MagicRestoreHealth"));
-		const bool ward = effect->data.primaryAV == RE::ActorValue::kWardPower || Has(effect, "MagicWard");
-		info.facts.healingOrWard = healing || ward;
-		info.school = SchoolOf(effect);
-		info.held = a_item->GetCastingType() == RE::MagicSystem::CastingType::kConcentration;
-		info.element = ElementOf(effect);
 		return info;
 	}
 

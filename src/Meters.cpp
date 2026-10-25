@@ -2,19 +2,22 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The meters. The player has one; with "Enemies build heat" on (off by default), every other actor that casts a spell
-// gets one too, and its spells get the same bonus and penalties (no bar or hand lights for them).
+// The bars (Heat.h). The player has a pair; with "Enemies build heat" on (off by default), every other actor that casts a
+// spell gets a pair too, and its spells get the same bonus and penalties (no bars or hand lights for them; their
+// Overdrive goes by itself when the gate lets it - an enemy has no key).
 //
-//   a cast         the game's spell cast event (main.cpp), queued; counted on the next frame. Held spells are not
-//                  counted there: the per-frame pass adds their heat for each frame a hand is casting one.
-//   every frame    held spells, the Overdrive key, the drain and the clocks (Heat::Meter::Tick), the slow magicka, the
-//                  hand lights (Hands.cpp), and what the bar and the Debug page show.
+//   a cast         the game's spell cast event (main.cpp), queued with its element and whether it was dual cast; counted
+//                  on the next frame. Held spells are not counted there: the per-frame pass adds their charge and heat for
+//                  each frame a hand is casting one.
+//   every frame    held spells, the Overdrive key (a press, and holding it for the focus gate), the cooling, the drain and
+//                  the clocks (Heat::Meter::Tick), the slow magicka, a misfire's backlash, the hand lights (Hands.cpp), and
+//                  what the bars and the Debug page show.
 //   the bonus      Multiplier, asked by the effect hook in main.cpp as each effect lands on a target, on whatever thread
 //                  the game applies it: everything here is behind one lock.
 //
 // Slow magicka during the cooldown: part of each frame's natural regeneration is taken back (Heat::TakeBack). Nothing on
 // the actor is changed for longer than that frame - no modifier on its magicka rate - so a crash in the middle of a
-// cooldown leaves nothing behind, and a load or a restart has nothing to undo; the meter itself is cleared on load.
+// cooldown leaves nothing behind, and a load or a restart has nothing to undo; the bars themselves are cleared on load.
 
 #include "Plugin.h"
 
@@ -22,7 +25,9 @@ namespace Plugin
 {
 	namespace
 	{
-		constexpr float kForgetEnemy = 30.0f;  // seconds an enemy's meter may sit idle before it is forgotten
+		constexpr float kForgetEnemy = 30.0f;  // seconds an enemy's bars may sit idle before they are forgotten
+		constexpr float kMisfireFlash = 0.6f;  // seconds a misfire's sputter lasts
+		constexpr float kStagger = 0.4f;       // a backlash's stagger, the game's own stagger graph value
 
 		struct Track
 		{
@@ -36,6 +41,7 @@ namespace Plugin
 		{
 			RE::ActorHandle      actor;
 			const RE::MagicItem* item{ nullptr };
+			bool                 dual{ false };
 		};
 
 		std::mutex                               gLock;  // everything below, up to the view
@@ -44,16 +50,32 @@ namespace Plugin
 		std::vector<Cast>                        gCasts;
 		std::optional<SpellLook::Look>           gLastLook;              // the HUD look of the player's last spell that built heat
 		const RE::MagicItem*                     gLastSpell{ nullptr };  // and that spell (its own art feeds the spell bar)
+		float                                    gMisfire{ 0.0f };       // a misfire's flash left, seconds
 
 		std::atomic<bool>          gKey{ false };
+		std::atomic<bool>          gKeyHeld{ false };
 		std::atomic<int>           gBenchStage{ -1 };
 		std::atomic<float>         gBenchHeat{ -1.0f };
+		std::atomic<float>         gBenchCharge{ -1.0f };
 		std::atomic<std::uint64_t> gBoosted{ 0 };
 
 		std::mutex gViewLock;
 		MeterView  gView;
 
 		bool Counts(const SpellInfo& a_info, const Settings& a_s) { return Heat::BuildsHeat(a_info.facts, a_s.counts); }
+
+		// an enemy's bars: no key, so Overdrive goes by itself when its gate lets it (the focus gate, which needs a key or
+		// two charged hands, is the sweet spot for them)
+		Heat::Tuning EnemyTuning(Heat::Tuning a_t)
+		{
+			if (a_t.mode == Heat::OverdriveMode::kKey) {
+				a_t.mode = Heat::OverdriveMode::kAutomatic;
+			}
+			if (a_t.gate == Heat::Gate::kFocus) {
+				a_t.gate = Heat::Gate::kSweetSpot;
+			}
+			return a_t;
+		}
 
 		// an actor whose spells build heat: the player, and with Enemies on, anyone else who is not on the player's side
 		bool Heats(RE::Actor* a_actor, const Settings& a_s)
@@ -96,27 +118,42 @@ namespace Plugin
 			return std::isfinite(c) ? std::max(c, 0.0f) : 0.0f;
 		}
 
+		RE::MagicCaster* HandCaster(RE::Actor* a_actor, std::size_t a_hand) { return a_actor->GetActorRuntimeData().magicCasters[a_hand]; }
+
 		// the hands' held spells this frame
-		void Held(RE::Actor* a_actor, Track& a_track, const Settings& a_s, float a_delta)
+		void Held(RE::Actor* a_actor, Track& a_track, const Heat::Tuning& a_t, const Settings& a_s, float a_delta)
 		{
 			for (std::size_t i = 0; i < 2; ++i) {  // the left hand, the right hand
-				auto* caster = a_actor->GetActorRuntimeData().magicCasters[i];
+				auto* caster = HandCaster(a_actor, i);
 				if (!caster || !caster->currentSpell || caster->state.get() != RE::MagicCaster::State::kCasting) {
 					continue;
 				}
 				const auto info = Read(caster->currentSpell);
 				if (info.held && Counts(info, a_s)) {
-					a_track.meter.Hold(a_s.tuning, info.school, CostOf(caster->currentSpell, a_actor), a_delta);
+					a_track.meter.Hold(a_t, info.school, CostOf(caster->currentSpell, a_actor), a_delta, info.element);
 				}
 			}
 		}
 
+		// both hands holding a charged spell: the focus gate's other way in
+		bool HandsCharged(RE::Actor* a_actor)
+		{
+			for (std::size_t i = 0; i < 2; ++i) {
+				const auto* caster = HandCaster(a_actor, i);
+				const auto  state = caster ? caster->state.get() : RE::MagicCaster::State::kNone;
+				if (!caster || !caster->currentSpell || (state != RE::MagicCaster::State::kReady && state != RE::MagicCaster::State::kCharging)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
 		// slow magicka: take back part of this frame's regeneration
-		void Regen(RE::Actor* a_actor, Track& a_track, const Settings& a_s, float a_delta)
+		void Regen(RE::Actor* a_actor, Track& a_track, const Heat::Tuning& a_t, float a_delta)
 		{
 			auto*       owner = a_actor->AsActorValueOwner();
 			const float now = owner->GetActorValue(RE::ActorValue::kMagicka);
-			const float regen = a_track.meter.MagickaRegen(a_s.tuning);
+			const float regen = a_track.meter.MagickaRegen(a_t);
 			if (regen < 1.0f && a_track.lastMagicka >= 0.0f && a_delta > 0.0f) {
 				// what natural regeneration could give in this frame, with room to spare (a quarter of the pool a second);
 				// a bigger rise is a potion or a spell, and is left alone
@@ -131,13 +168,20 @@ namespace Plugin
 			a_track.lastMagicka = now;
 		}
 
-		// the stage a hand's spell is judged by: its school's (a meter per school), else the shared meter's
-		Heat::Stage HandStage(RE::PlayerCharacter* a_player, bool a_left, const Settings& a_s)
+		// a misfire with Backlash on: a stagger, and a bite out of the magicka pool
+		void Backlash(RE::PlayerCharacter* a_player, const Heat::Tuning& a_t, bool a_log)
 		{
-			const auto* item = a_player->GetEquippedObject(a_left);
-			const auto* spell = item ? item->As<RE::MagicItem>() : nullptr;
-			const auto  school = spell ? Read(spell).school : gPlayer.meter.Last();
-			return gPlayer.meter.StageOf(a_s.tuning, school);
+			auto*       owner = a_player->AsActorValueOwner();
+			const float pool = std::max(owner->GetPermanentActorValue(RE::ActorValue::kMagicka), 0.0f);
+			const float bite = std::min(pool * std::clamp(a_t.backlashMagicka, 0.0f, 0.5f), owner->GetActorValue(RE::ActorValue::kMagicka));
+			if (bite > 0.0f) {
+				owner->DamageActorValue(RE::ActorValue::kMagicka, bite);
+			}
+			a_player->SetGraphVariableFloat("staggerMagnitude", kStagger);
+			a_player->NotifyAnimationGraph("staggerStart");
+			if (a_log) {
+				SKSE::log::info("misfire backlash: a stagger, {:.0f} magicka", bite);
+			}
 		}
 	}
 
@@ -146,18 +190,56 @@ namespace Plugin
 		if (!a_caster || !a_item) {
 			return;
 		}
+		bool dual = false;
+		for (std::size_t i = 0; i < 2; ++i) {
+			const auto* caster = HandCaster(a_caster, i);
+			dual = dual || (caster && caster->GetIsDualCasting());
+		}
 		std::lock_guard lock(gLock);
 		if (gCasts.size() < 256) {
-			gCasts.push_back({ a_caster->GetHandle(), a_item });
+			gCasts.push_back({ a_caster->GetHandle(), a_item, dual });
 		}
 	}
 
 	void PressOverdriveKey() { gKey = true; }
+	void HoldOverdriveKey(bool a_down) { gKeyHeld = a_down; }
+	void BenchSetCharge(float a_charge) { gBenchCharge = std::isfinite(a_charge) ? std::clamp(a_charge, 0.0f, Heat::kFull) : 0.0f; }
 	void BenchSetHeat(float a_heat) { gBenchHeat = std::isfinite(a_heat) ? std::clamp(a_heat, 0.0f, Heat::kFull) : 0.0f; }
 	void BenchForceStage(Heat::Stage a_stage) { gBenchStage = static_cast<int>(a_stage); }
 
+	namespace
+	{
+		std::atomic<float> gFrameUsAvg{ 0.0f }, gFrameUsMax{ 0.0f };
+
+		// Frame's own time, taken whichever way it returns
+		struct FrameTimer
+		{
+			std::chrono::steady_clock::time_point start{ std::chrono::steady_clock::now() };
+			FrameTimer() = default;
+			FrameTimer(const FrameTimer&) = delete;
+			FrameTimer& operator=(const FrameTimer&) = delete;
+			~FrameTimer()
+			{
+				const float us = std::chrono::duration<float, std::micro>(std::chrono::steady_clock::now() - start).count();
+				const float avg = gFrameUsAvg.load(std::memory_order_relaxed);
+				gFrameUsAvg.store(avg <= 0.0f ? us : avg + (us - avg) * 0.05f, std::memory_order_relaxed);  // about the last 20 frames
+				gFrameUsMax.store(std::max(gFrameUsMax.load(std::memory_order_relaxed), us), std::memory_order_relaxed);
+			}
+		};
+	}
+
+	FrameCost FrameCostNow() { return { gFrameUsAvg.load(), gFrameUsMax.load() }; }
+
+	void ResetFrameCost()
+	{
+		gFrameUsAvg = 0.0f;
+		gFrameUsMax = 0.0f;
+	}
+
 	void Frame(float a_delta)
 	{
+		const FrameTimer timer;
+		NewReadFrame();
 		const auto  s = Config();
 		const float dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
 		auto*       player = RE::PlayerCharacter::GetSingleton();
@@ -170,9 +252,11 @@ namespace Plugin
 			gView = {};
 			return;
 		}
-		Heat::Stage left = Heat::Stage::kCold, right = Heat::Stage::kCold;
+		const auto& t = s.tuning;
+		const auto  enemyTuning = EnemyTuning(t);
+		Heat::Stage stage = Heat::Stage::kCold;
 		MeterView   view;
-		bool        lookKnown = false;
+		bool        lookKnown = false, backlash = false;
 		{
 			std::lock_guard   lock(gLock);
 			std::vector<Cast> casts;
@@ -185,45 +269,59 @@ namespace Plugin
 					continue;
 				}
 				if (auto* track = TrackOf(actor, s, true)) {
-					track->meter.Cast(s.tuning, info.school, CostOf(c.item, actor));
+					track->meter.Cast(track == &gPlayer ? t : enemyTuning, info.school, CostOf(c.item, actor), info.element, c.dual);
 					if (track == &gPlayer) {
 						gLastLook = LookOf(c.item);
 						gLastSpell = c.item;
 					}
 					if (s.debugLog && track == &gPlayer) {
-						SKSE::log::info("cast {} ({}): heat {:.0f}, {}", c.item->GetName(), Heat::SchoolName(info.school),
-							gPlayer.meter.Shown(s.tuning), Heat::StageName(gPlayer.meter.ShownStage(s.tuning)));
+						SKSE::log::info("cast {} ({}{}): charge {:.0f}, heat {:.0f}, {}", c.item->GetName(), Heat::SchoolName(info.school), c.dual ? ", dual" : "",
+							gPlayer.meter.Charge(t), gPlayer.meter.HeatNow(), Heat::StageName(gPlayer.meter.StageNow(t)));
 					}
 				}
 			}
 			if (gKey.exchange(false)) {
 				auto* ui = RE::UI::GetSingleton();
-				if (ui && !ui->GameIsPaused() && gPlayer.meter.PressKey(s.tuning) && s.debugLog) {
-					SKSE::log::info("Overdrive: the key");
+				if (ui && !ui->GameIsPaused()) {
+					const auto r = gPlayer.meter.PressKey(t);
+					if (r == Heat::Release::kMisfire) {
+						gMisfire = kMisfireFlash;
+						backlash = t.backlash;
+					}
+					if (s.debugLog) {
+						static constexpr const char* kSaid[]{ "Overdrive", "not ready", "too cold", "too hot", "waiting to cool", "MISFIRE", "hold to focus" };
+						SKSE::log::info("the Overdrive key: {} (heat {:.0f})", kSaid[static_cast<int>(r)], gPlayer.meter.HeatNow());
+					}
 				}
 			}
-			if (const int stage = gBenchStage.exchange(-1); stage >= 0) {
-				gPlayer.meter.ForceStage(s.tuning, static_cast<Heat::Stage>(std::clamp(stage, 0, 4)));
+			if (const int st = gBenchStage.exchange(-1); st >= 0) {
+				gPlayer.meter.ForceStage(t, static_cast<Heat::Stage>(std::clamp(st, 0, 4)));
+			}
+			if (const float charge = gBenchCharge.exchange(-1.0f); charge >= 0.0f) {
+				gPlayer.meter.SetCharge(t, charge);
 			}
 			if (const float heat = gBenchHeat.exchange(-1.0f); heat >= 0.0f) {
-				gPlayer.meter.SetHeat(s.tuning, heat);
+				gPlayer.meter.SetHeat(heat);
 			}
 
-			Held(player, gPlayer, s, dt);
+			Held(player, gPlayer, t, s, dt);
 			if (const auto* held = HeldSpell(player, s)) {
 				gLastLook = LookOf(held);
 				gLastSpell = held;
 			}
-			gPlayer.meter.Tick(s.tuning, dt);
-			Regen(player, gPlayer, s, dt);
+			const bool focusing = (t.mode == Heat::OverdriveMode::kKey && gKeyHeld.load()) || HandsCharged(player);
+			gPlayer.meter.Focus(t, focusing, dt);
+			gPlayer.meter.Tick(t, dt);
+			Regen(player, gPlayer, t, dt);
+			gMisfire = std::max(gMisfire - dt, 0.0f);
 			for (auto it = gEnemies.begin(); it != gEnemies.end();) {
 				const auto actorPtr = it->second.actor.get();
 				auto*      actor = actorPtr.get();
 				auto&      track = it->second;
 				if (actor) {
-					Held(actor, track, s, dt);
-					track.meter.Tick(s.tuning, dt);
-					Regen(actor, track, s, dt);
+					Held(actor, track, enemyTuning, s, dt);
+					track.meter.Tick(enemyTuning, dt);
+					Regen(actor, track, enemyTuning, dt);
 				}
 				track.idle = track.meter.Idle() ? track.idle + dt : 0.0f;
 				if (!actor || !s.enemies || actor->IsDead() || track.idle > kForgetEnemy) {
@@ -233,22 +331,33 @@ namespace Plugin
 				}
 			}
 
-			left = HandStage(player, true, s);
-			right = HandStage(player, false, s);
 			const auto& m = gPlayer.meter;
-			view.heat = m.Shown(s.tuning);
-			view.stage = m.ShownStage(s.tuning);
+			const auto  band = Heat::BandOf(t);
+			stage = m.StageNow(t);
+			view.charge = m.Charge(t);
+			view.heat = m.HeatNow();
+			view.stage = stage;
 			view.state = m.Now();
 			view.timer = m.Timer();
-			view.timerOf = m.Now() == Heat::Meter::State::kOverdrive ? s.tuning.burst : std::max(s.tuning.cooldown, 0.1f);
-			view.ready = m.Ready(s.tuning);
+			view.timerOf = m.Now() == Heat::Meter::State::kOverdrive ? t.burst : std::max(t.cooldown, 0.1f);
+			view.ready = m.Ready(t);
+			view.gate = m.Gated(t);
+			view.bandLow = band.low;
+			view.redLine = band.red;
+			view.redZone = m.RedZone(t);
+			view.focus = std::clamp(m.FocusHeld() / std::max(t.focusSeconds, 0.05f), 0.0f, 1.0f);
+			view.misfire = gMisfire / kMisfireFlash;
+			view.misfires = m.Misfires();
 			view.last = m.Last();
-			view.bonus = m.Bonus(s.tuning, m.Last());
-			view.regen = m.MagickaRegen(s.tuning);
+			view.bonus = m.Bonus(t);
+			view.regen = m.MagickaRegen(t);
 			view.enemies = gEnemies.size();
 			view.look = gLastLook.value_or(SpellLook::Look::kGeneric);
 			view.spell = gLastSpell;
 			lookKnown = gLastLook.has_value();
+		}
+		if (backlash) {
+			Backlash(player, t, s.debugLog);
 		}
 		if (!lookKnown) {  // nothing has built heat yet: the spell in hand (read outside the lock, as the tint below)
 			view.spell = EquippedSpell(player);
@@ -264,9 +373,9 @@ namespace Plugin
 			}
 		}
 		NoteSpellArt(view.spell);     // the spell's own textures and color for the spell bar (read once per spell)
-		UpdateOverload(view, s, dt);  // the spells grow in Overdrive and sputter in the cooldown - before the hand lights read it
-		UpdateHands(left, right, s);
-		UpdateMarks(view, s, dt);  // Overheating fire / frost spells leave scorch / frost marks that hurt (his (b), 2026-10-18)
+		UpdateOverload(view, s, dt);  // the spells grow with the charge, sputter in the cooldown and at a misfire - before the hand lights read it
+		UpdateHands(stage, stage, s);
+		UpdateMarks(view, s, dt);  // Overheating fire / frost spells leave scorch / frost marks that hurt
 		std::lock_guard lock(gViewLock);
 		gView = view;
 	}
@@ -288,7 +397,7 @@ namespace Plugin
 		}
 		std::lock_guard lock(gLock);
 		const auto*     track = TrackOf(a_caster, s, false);
-		const float     k = track ? track->meter.Bonus(s.tuning, info.school) : 1.0f;
+		const float     k = track ? track->meter.Bonus(track == &gPlayer ? s.tuning : EnemyTuning(s.tuning)) : 1.0f;
 		if (k != 1.0f) {
 			++gBoosted;
 		}
@@ -303,7 +412,9 @@ namespace Plugin
 		gCasts.clear();
 		gLastLook.reset();
 		gLastSpell = nullptr;
+		gMisfire = 0.0f;
 		gKey = false;
+		gKeyHeld = false;
 	}
 
 	MeterView PlayerView()

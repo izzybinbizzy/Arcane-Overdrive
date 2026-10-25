@@ -5,34 +5,33 @@
 // General Public License as published by the Free Software Foundation, either version 3 of the License,
 // or (at your option) any later version. See LICENSE.txt.
 //
-// Casting builds heat. Four stages - Warm, Hot, Overheating, Overdrive - each give your spells a little more power and the
-// lights on your casting hands a little more reach and brightness. Staying in one school builds heat faster; switching
-// school cools it; it drains a few seconds after your last cast. Overdrive is a short burst at the top bonus, then a
-// cooldown with slower magicka. A bar under the magicka bar shows it. It needs no plugin (.esp) and no script, and
-// writes nothing into the save.
+// Two bars. Casting fills the Overdrive bar (faster in one school; switching school costs some; it drains a few seconds
+// after your last cast). Casting FAST builds Heat, which cools when you ease off: its stages - Warm, Hot, Overheating -
+// each give your spells a little more power and the lights on your casting hands a little more reach. A full Overdrive
+// bar goes when Heat lets it (by default only in the sweet spot: too cold does nothing, too hot misfires): a short burst
+// at the top bonus, then a cooldown with slower magicka. It needs no plugin (.esp) and no script, and writes nothing
+// into the save.
 //
 // THE FILES, AND WHAT EACH ONE IS FOR
 //   main.cpp        this file - the hooks (the player's update; each effect as it lands), the spell cast event, the
 //                   Overdrive key, and the order things start in
-//   Heat.h          the whole meter as plain numbers: gain, stages, drain, school switch, Overdrive, cooldown, penalties,
-//                   which spells count - tests/test_heat.cpp
+//   Heat.h          the two bars as plain numbers: the charge, the heat, its stages and gate, misfires, Overdrive, the
+//                   cooldown, penalties, which spells count - tests/test_heat.cpp
 //   Scaled.h        the light scaler of the fading module Illuminated and RELight - Spell Addon share (FadeGlow.h
 //                   Glow::Scaled), copied unchanged - tests/test_heat.cpp
-//   FlameFx.h       the flame bar's moving parts as plain numbers (noise, the heat colors, each stage's look) - Menu.cpp
-//                   draws them - tests/test_heat.cpp
 //   IniText.h       a settings file's lines as plain text (the same file in each of these plugins) - tests/test_heat.cpp
-//   SettingsText.h  the settings and their keys, and key names - tests/test_heat.cpp
-//   Settings.cpp    the settings file, Data\SKSE\Plugins\SpellMasteryHeat.ini, and the one shared copy
+//   SettingsText.h  the settings, their keys in the two files, the three presets, and key names - tests/test_heat.cpp
+//   Settings.cpp    the settings files, Data\SKSE\Plugins\SpellMasteryHeat.ini (the menu's) and SpellMasteryHeat
+//                   Advanced.ini (every number), and the one shared copy
 //   Spells.cpp      what a spell is to the meter (school, kind, held, element) and which effects are boosted
-//   Meters.cpp      the meters: casts, held spells, the key, the clocks, slow magicka, the bonus
+//   Meters.cpp      the bars: casts, held spells, the key, the clocks, slow magicka, a misfire's backlash, the bonus
 //   Hands.cpp       the lights on the casting hands, scaled (and the optional hand glow of its own)
-//   Menu.cpp        the settings and debug pages, and the bar, in SKSE Menu Framework
+//   Menu.cpp        the settings and debug pages in SKSE Menu Framework, and the HUD element that draws the bars
 //   SpellLook.h     which HUD look a spell gets (his list of looks per spell type) - tests/test_heat.cpp
 //   Looks.cpp       a game spell read into SpellLook.h's facts
-//   BarFx.h         the live spell bars as plain numbers: each spell kind's motion, the particles round the bar, the flow field
-//                   (his order 2026-10-15) - tests/test_heat.cpp
-//   SpellArt.cpp    the spell's own textures, flipbook cells and color, read off its models for the bar
-//   HudBars.*       the spell bars drawn on the HUD (Bar style "Spell bars"), the glow added as the game adds magic
+//   SpellArt.cpp    the spell's own color (its light, else its art), for the bars
+//   BarShader.h     the bars' pixel shader: every spell kind's look, the frame, the Heat strip - drawn off the game by a bench
+//   HudBars.*       the high-res bars on the HUD: the Overdrive bar and the Heat bar, each one quad of BarShader.h
 //   Overload.h      the overcharge on the spells as plain numbers: growth in Overdrive, the burnout's sputter - tests
 //   Overload.cpp    puts them on the casting art in the hands and the player's spell projectiles
 //   Marks.h         the scorch / frost marks as plain numbers: the cap, the refresh, the lifetime, the hurt ticks - tests
@@ -150,14 +149,14 @@ namespace
 		{
 			for (auto* e = a_event ? *a_event : nullptr; e; e = e->next) {
 				const auto* button = e->AsButtonEvent();
-				if (!button || !button->IsDown()) {
+				if (!button || (!button->IsDown() && !button->IsUp())) {
 					continue;
 				}
 				const int code = CodeOf(*button);
 				if (code < 0) {
 					continue;
 				}
-				if (gCapture.exchange(false)) {
+				if (button->IsDown() && gCapture.exchange(false)) {
 					if (code != 1) {  // Esc cancels
 						Plugin::ApplySetting("OverdriveKey", code);
 						Plugin::SaveSettings();
@@ -166,7 +165,11 @@ namespace
 					continue;
 				}
 				const auto s = Plugin::Config();
-				if (s.enabled && s.tuning.mode == Heat::OverdriveMode::kKey && code == s.overdriveKey) {
+				if (!s.enabled || s.tuning.mode != Heat::OverdriveMode::kKey || code != s.overdriveKey) {
+					continue;
+				}
+				Plugin::HoldOverdriveKey(button->IsDown());  // held: the focus gate
+				if (button->IsDown()) {
 					Plugin::PressOverdriveKey();
 				}
 			}

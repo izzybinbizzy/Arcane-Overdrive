@@ -137,9 +137,36 @@ namespace Plugin
 		if (!a_item) {
 			return SpellLook::Look::kGeneric;
 		}
+		// the spell in hand is looked at every frame: the last four answers on this thread are kept for about a second, and
+		// only while the spell's effects are the ones they were read from (a mod that rewrites them is seen at once)
+		struct Kept
+		{
+			const RE::MagicItem*     item{ nullptr };
+			RE::FormID               id{ 0 };
+			std::uint32_t            frame{ 0 };
+			std::size_t              effects{ 0 };
+			const RE::EffectSetting* main{ nullptr };
+			SpellLook::Look          look{ SpellLook::Look::kGeneric };
+		};
+		constexpr std::uint32_t          kKeepFrames = 60;
+		thread_local std::array<Kept, 4> kept{};
+		thread_local std::size_t         next = 0;
+		const RE::FormID                 id = a_item->GetFormID();
+		const std::uint32_t              frame = ReadFrameNow();
+		const auto*                      costliest = a_item->GetCostliestEffectItem();
+		const RE::EffectSetting*         main = costliest ? costliest->baseEffect : nullptr;
+		const std::size_t                count = a_item->effects.size();
+		for (const auto& k : kept) {
+			if (k.item == a_item && k.id == id && k.effects == count && k.main == main && frame - k.frame <= kKeepFrames) {
+				return k.look;
+			}
+		}
 		Effects effects;
 		AddSpell(effects, *a_item, true);
-		return SpellLook::Classify(effects.All());
+		const auto look = SpellLook::Classify(effects.All());
+		kept[next] = { a_item, id, frame, count, main, look };
+		next = (next + 1) % kept.size();
+		return look;
 	}
 
 	const RE::MagicItem* HeldSpell(RE::Actor* a_actor, const Settings& a_s)
