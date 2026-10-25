@@ -2,18 +2,31 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The whole meter as plain numbers, with nothing of the game in it (tests/test_heat.cpp): what a cast adds, the stages,
-// the drain after the grace period, the loss on a change of school, Overdrive (automatic, on a key, or off), the
-// cooldown and its two penalties, the bonus a spell gets, how much the hand lights grow, and which spells count.
+// The two bars as plain numbers, with nothing of the game in it (tests/test_heat.cpp): the Overdrive bar (the charge), the
+// Heat bar (the strain) and how Heat lets Overdrive go, the stages, Overdrive, the cooldown and its penalties, the bonus
+// a spell gets, how much the hand lights grow, and which spells count.
 //
-//   heat 0 to 100     Warm from 25, Hot from 50, Overheating from 75, Overdrive at 100 (thresholds adjustable)
-//   a cast            adds 8 x sqrt(cost / 50), between 4 and 24, times Heat gain speed; a held spell adds the same
-//                     per second of its per-second cost, times Held spell gain (60%: they hold for a long time)
-//   same school       as the last cast: the gain is multiplied by 1 + Same school bonus (+50%)
-//   another school    the heat drops by School switch cooling (25 points: one stage) before the gain is added
-//   after a cast      Grace period (2 s), then the heat drains by Drain speed (10 a second)
-//   Overdrive         Burst length (6 s) at the Overdrive bonus; then the Cooldown (10 s): the meter is locked at 0,
-//                     with slow magicka (on, to 40%) and weaker spells (off, 15% weaker) as the two optional penalties
+//   THE OVERDRIVE BAR, the charge, 0 to 100
+//     a cast        adds 8 x sqrt(cost / 50), between 4 and 24, times Charge speed; a held spell adds the same per second of
+//                   its per-second cost, times Held spell gain (60%: they hold for a long time)
+//     same school   as the last cast: the gain is multiplied by 1 + Same school bonus (+50%)
+//     another school  the charge drops by School switch cooling (25) before the gain is added
+//     after a cast  Grace period (3 s), then it drains by Drain speed (5 a second)
+//     full          Overdrive is ready; it goes when the Heat gate lets it (at once with the gate off, or on the key)
+//   THE HEAT BAR, the strain, 0 to 100 - it shows how FAST you cast
+//     a cast        adds that cast gain x Heat per cast (1.5) x Heat climbs; the same element as the last x 1.25, a dual
+//                   cast x 1.5; a held spell adds Heat held (3) x its gain a second
+//     always        cools toward 0 by Cooling (a quarter of what it holds a second) x Heat cools
+//     stages        Warm from 25, Hot from 50, Overheating from 75: the bonus and the hand lights; the red zone from the
+//                   red line (85)
+//   THE GATE (Heat gate on)
+//     sweet spot    the default: Overdrive goes only with Heat in the band, from its bottom (50) up to the red line; too
+//                   cold, nothing; too hot, a misfire - Heat sheds 25 (and with Backlash the game side staggers you and
+//                   bites your magicka). On automatic it simply waits for the band
+//     vent          Overdrive goes whenever Heat is below the red line; in the red a press waits until it has cooled
+//     focus         Heat at the band's bottom or hotter, and a focus held for Focus time (1 s)
+//   OVERDRIVE       Burst length (6 s) at the Overdrive bonus, the Heat spent with it (down to 0 by its end); then the
+//                   Cooldown (10 s): both bars locked at 0, with slow magicka (on, to 40%) and weaker spells (off, 15%)
 
 #pragma once
 
@@ -59,9 +72,37 @@ namespace Heat
 
 	enum class OverdriveMode : int
 	{
-		kAutomatic = 0,  // it starts by itself at 100
-		kKey = 1,        // it waits at Overheating until the key is pressed
+		kAutomatic = 0,  // it goes by itself when the charge is full and the gate lets it
+		kKey = 1,        // it waits, full, for the key
 		kOff = 2
+	};
+
+	enum class Gate : int
+	{
+		kSweetSpot = 0,
+		kVent = 1,
+		kFocus = 2
+	};
+
+	// what the gate says now, for the bars
+	enum class GateNow : std::uint8_t
+	{
+		kOpen,
+		kCold,  // Heat below the band
+		kHot,   // Heat past the red line
+		kFocus  // the focus gate: hold the focus
+	};
+
+	// what a press of the Overdrive key did
+	enum class Release : std::uint8_t
+	{
+		kStarted,
+		kNotReady,  // not on the key, the charge not full, or Overdrive / the cooldown running
+		kCold,
+		kHot,      // too hot, with misfires off: nothing
+		kWaiting,  // the vent gate: it goes once Heat is below the red line
+		kMisfire,
+		kFocus  // the focus gate: holding is what counts
 	};
 
 	enum class Boost : int
@@ -72,23 +113,44 @@ namespace Heat
 
 	struct Tuning
 	{
-		float                gain{ 1.0f };               // Heat gain speed
-		float                heldGain{ 0.6f };           // a held spell's gain, against a cast's
-		float                drain{ 10.0f };             // heat a second, after the grace period
-		float                grace{ 2.0f };              // seconds
-		float                sameSchool{ 0.5f };         // extra gain for the same school as the last cast
-		float                switchLoss{ 25.0f };        // heat lost on casting another school
-		bool                 perSchool{ false };         // one meter per school, else one shared meter
+		// the Overdrive bar
+		float gain{ 1.0f };         // Charge speed
+		float heldGain{ 0.6f };     // a held spell's gain, against a cast's
+		float drain{ 5.0f };        // charge a second, after the grace period
+		float grace{ 3.0f };        // seconds
+		float sameSchool{ 0.5f };   // extra gain for the same school as the last cast
+		float switchLoss{ 25.0f };  // charge lost on casting another school
+		bool  perSchool{ false };   // one charge per school, else one shared charge
+		// the Heat bar
+		float                heatPerCast{ 1.5f };        // x the cast gain
+		float                heatHeld{ 3.0f };           // x a held spell's gain, a second
+		float                heatSameElement{ 0.25f };   // extra heat for the same element as the last spell
+		float                heatDual{ 0.5f };           // extra heat for a dual cast
+		float                cool{ 0.25f };              // the part of its heat it loses a second
+		float                heatUp{ 1.0f };             // Heat climbs
+		float                heatDown{ 1.0f };           // Heat cools
 		std::array<float, 3> at{ 25.0f, 50.0f, 75.0f };  // where Warm, Hot and Overheating start
-		float                bonusPerStage{ 0.04f };     // Warm +4%, Hot +8%, Overheating +12%
-		float                overdriveBonus{ 0.25f };
-		OverdriveMode        mode{ OverdriveMode::kAutomatic };
-		float                burst{ 6.0f };      // seconds of Overdrive
-		float                cooldown{ 10.0f };  // seconds locked at 0 after it
-		bool                 slowMagicka{ true };
-		float                slowMagickaTo{ 0.4f };  // magicka regenerates at this fraction during the cooldown
-		bool                 weaker{ false };
-		float                weakerBy{ 0.15f };  // spells this much weaker during the cooldown
+		float                redLine{ 85.0f };           // the red zone from here; the sweet spot's top
+		// the gate
+		bool  heatGate{ true };
+		Gate  gate{ Gate::kSweetSpot };
+		float bandLow{ 50.0f };  // the sweet spot's bottom, and the focus gate's least heat
+		bool  misfire{ true };   // the sweet spot: a release past the red line misfires
+		float misfireDrop{ 25.0f };
+		bool  backlash{ false };         // ... and staggers you and takes a bite of your magicka (the game side)
+		float backlashMagicka{ 0.15f };  // of your magicka pool
+		float focusSeconds{ 1.0f };
+		// the bonus
+		bool          bonusOn{ true };
+		float         bonusPerStage{ 0.04f };  // Warm +4%, Hot +8%, Overheating +12%
+		float         overdriveBonus{ 0.25f };
+		OverdriveMode mode{ OverdriveMode::kAutomatic };
+		float         burst{ 6.0f };      // seconds of Overdrive
+		float         cooldown{ 10.0f };  // seconds locked at 0 after it
+		bool          slowMagicka{ true };
+		float         slowMagickaTo{ 0.4f };  // magicka regenerates at this fraction during the cooldown
+		bool          weaker{ false };
+		float         weakerBy{ 0.15f };  // spells this much weaker during the cooldown
 
 		bool operator==(const Tuning&) const = default;
 	};
@@ -113,9 +175,23 @@ namespace Heat
 		                                                                     Stage::kCold;
 	}
 
+	// the band's bottom and the red line, in order and inside the bar
+	struct Band
+	{
+		float low{ 50.0f }, red{ 85.0f };
+	};
+	[[nodiscard]] inline Band BandOf(const Tuning& a_t) noexcept
+	{
+		const float low = std::isfinite(a_t.bandLow) ? std::clamp(a_t.bandLow, 0.0f, kFull - 5.0f) : 50.0f;
+		return { low, std::isfinite(a_t.redLine) ? std::clamp(a_t.redLine, low + 5.0f, kFull) : std::max(85.0f, low + 5.0f) };
+	}
+
 	// the spell's magnitude multiplier at a stage (Overdrive: its own bonus)
 	[[nodiscard]] inline float StageBonus(const Tuning& a_t, Stage a_stage) noexcept
 	{
+		if (!a_t.bonusOn) {
+			return 1.0f;
+		}
 		if (a_stage == Stage::kOverdrive) {
 			return 1.0f + std::max(a_t.overdriveBonus, 0.0f);
 		}
@@ -167,7 +243,7 @@ namespace Heat
 		return !a_spell.healingOrWard || a_counts.healingAndWards;
 	}
 
-	// ------------------------------------------------------------------ the meter
+	// ------------------------------------------------------------------ the two bars
 	class Meter
 	{
 	public:
@@ -178,36 +254,66 @@ namespace Heat
 			kCooldown
 		};
 
-		// a fire-and-forget cast of a_school costing a_cost
-		void Cast(const Tuning& a_t, School a_school, float a_cost) noexcept { Add(a_t, a_school, CastGain(a_cost) * Speed(a_t)); }
+		// a fire-and-forget cast of a_school costing a_cost; a_element 0 none, 1 fire, 2 frost, 3 shock (Spells.cpp)
+		void Cast(const Tuning& a_t, School a_school, float a_cost, int a_element = 0, bool a_dual = false) noexcept
+		{
+			if (_state != State::kBuilding) {
+				return;
+			}
+			const float gain = CastGain(a_cost);
+			AddHeat(a_t, gain * Clamp(a_t.heatPerCast, 0.0f, 10.0f) * (a_dual ? 1.0f + Clamp(a_t.heatDual, 0.0f, 3.0f) : 1.0f), a_element);
+			Add(a_t, a_school, gain * Speed(a_t));
+			StartIfLet(a_t);
+		}
 
 		// a held spell, this frame: a_costPerSecond for a_delta seconds
-		void Hold(const Tuning& a_t, School a_school, float a_costPerSecond, float a_delta) noexcept
+		void Hold(const Tuning& a_t, School a_school, float a_costPerSecond, float a_delta, int a_element = 0) noexcept
 		{
 			const float dt = Delta(a_delta);
-			if (dt > 0.0f) {
-				Add(a_t, a_school, CastGain(a_costPerSecond) * Speed(a_t) * std::clamp(a_t.heldGain, 0.0f, 3.0f) * dt);
+			if (dt <= 0.0f || _state != State::kBuilding) {
+				return;
+			}
+			const float gain = CastGain(a_costPerSecond) * dt;
+			AddHeat(a_t, gain * Clamp(a_t.heatHeld, 0.0f, 20.0f), a_element);
+			Add(a_t, a_school, gain * Speed(a_t) * Clamp(a_t.heldGain, 0.0f, 3.0f));
+			StartIfLet(a_t);
+		}
+
+		// the focus gate, every frame: a_focusing = the key held, or both hands holding a charged spell
+		void Focus(const Tuning& a_t, bool a_focusing, float a_delta) noexcept
+		{
+			const float dt = Delta(a_delta);
+			if (!FocusGate(a_t) || a_t.mode == OverdriveMode::kOff || _state != State::kBuilding || !Full() || _heat < BandOf(a_t).low || !a_focusing) {
+				_focus = 0.0f;
+				return;
+			}
+			_focus += dt;
+			if (_focus >= std::max(a_t.focusSeconds, 0.0f)) {
+				Start(a_t);
 			}
 		}
 
-		// time passing: the drain, and Overdrive's and the cooldown's clocks
+		// time passing: the cooling and the drain, Overdrive's and the cooldown's clocks, and Overdrive starting by itself
 		void Tick(const Tuning& a_t, float a_delta) noexcept
 		{
 			const float dt = Delta(a_delta);
 			switch (_state) {
 			case State::kOverdrive:
 				_timer -= dt;
+				_heat = _heatAtStart * std::clamp(_timer / std::max(_burst, 0.1f), 0.0f, 1.0f);  // spent as power
 				if (_timer <= 0.0f) {
 					_state = State::kCooldown;
 					_timer = std::max(a_t.cooldown, 0.0f);
-					_heat.fill(0.0f);
+					_charge.fill(0.0f);
+					_heat = 0.0f;
 					if (_timer <= 0.0f) {
 						_state = State::kBuilding;
 					}
 				}
 				return;
 			case State::kCooldown:
-				_heat.fill(0.0f);
+				_charge.fill(0.0f);
+				_heat = 0.0f;
 				_timer -= dt;
 				if (_timer <= 0.0f) {
 					_state = State::kBuilding;
@@ -217,51 +323,95 @@ namespace Heat
 			default:
 				break;
 			}
+			_heat *= std::exp(-Clamp(a_t.cool, 0.0f, 5.0f) * Clamp(a_t.heatDown, 0.1f, 5.0f) * dt);
+			if (_heat < 0.01f) {
+				_heat = 0.0f;
+			}
 			_sinceCast += dt;
 			if (_sinceCast > std::max(a_t.grace, 0.0f)) {
 				const float drop = std::max(a_t.drain, 0.0f) * std::min(dt, _sinceCast - std::max(a_t.grace, 0.0f));
-				for (auto& h : _heat) {
-					h = std::max(h - drop, 0.0f);
+				for (auto& c : _charge) {
+					c = std::max(c - drop, 0.0f);
 				}
 			}
+			StartIfLet(a_t);
 		}
 
-		// the Overdrive key: starts it when the meter is full; false when it cannot
-		bool PressKey(const Tuning& a_t) noexcept
+		// the Overdrive key
+		Release PressKey(const Tuning& a_t) noexcept
 		{
-			if (a_t.mode != OverdriveMode::kKey || _state != State::kBuilding || Peak() < kFull) {
-				return false;
+			if (a_t.mode != OverdriveMode::kKey || _state != State::kBuilding || !Full()) {
+				return Release::kNotReady;
 			}
-			Start(a_t);
-			return true;
+			switch (Gated(a_t)) {
+			case GateNow::kOpen:
+				Start(a_t);
+				return Release::kStarted;
+			case GateNow::kCold:
+				return Release::kCold;
+			case GateNow::kFocus:
+				return Release::kFocus;
+			default:
+				break;
+			}
+			if (a_t.gate == Gate::kVent) {
+				_waiting = true;
+				return Release::kWaiting;
+			}
+			if (!a_t.misfire) {
+				return Release::kHot;
+			}
+			_heat = std::max(_heat - std::max(a_t.misfireDrop, 0.0f), 0.0f);
+			++_misfires;
+			return Release::kMisfire;
 		}
 
 		// ---- reading it
 		[[nodiscard]] State  Now() const noexcept { return _state; }
 		[[nodiscard]] float  Timer() const noexcept { return _timer; }
 		[[nodiscard]] School Last() const noexcept { return _last; }
-		[[nodiscard]] bool   Ready(const Tuning& a_t) const noexcept
+		[[nodiscard]] float  HeatNow() const noexcept { return _heat; }
+		[[nodiscard]] float  FocusHeld() const noexcept { return _focus; }
+		[[nodiscard]] int    Misfires() const noexcept { return _misfires; }
+		[[nodiscard]] bool   Waiting() const noexcept { return _waiting; }
+		// the charge a spell of a_school builds (the shared bar, or its school's)
+		[[nodiscard]] float ChargeOf(const Tuning& a_t, School a_school) const noexcept { return _charge[Index(a_t, a_school)]; }
+		// the charge the bar shows: the shared bar, or the last school's
+		[[nodiscard]] float Charge(const Tuning& a_t) const noexcept { return _charge[Index(a_t, _last)]; }
+		// full and waiting to go (the gate decides when)
+		[[nodiscard]] bool    Ready(const Tuning& a_t) const noexcept { return a_t.mode != OverdriveMode::kOff && _state == State::kBuilding && Full(); }
+		[[nodiscard]] bool    RedZone(const Tuning& a_t) const noexcept { return _state == State::kBuilding && _heat >= BandOf(a_t).red; }
+		[[nodiscard]] GateNow Gated(const Tuning& a_t) const noexcept
 		{
-			return a_t.mode == OverdriveMode::kKey && _state == State::kBuilding && Peak() >= kFull;
+			if (!a_t.heatGate) {
+				return GateNow::kOpen;
+			}
+			const auto band = BandOf(a_t);
+			if (a_t.gate == Gate::kVent) {
+				return _heat >= band.red ? GateNow::kHot : GateNow::kOpen;
+			}
+			if (_heat < band.low) {
+				return GateNow::kCold;
+			}
+			if (a_t.gate == Gate::kFocus) {
+				return _focus >= std::max(a_t.focusSeconds, 0.0f) ? GateNow::kOpen : GateNow::kFocus;
+			}
+			return _heat >= band.red ? GateNow::kHot : GateNow::kOpen;
 		}
-		// the heat a spell of a_school is judged by (the shared meter, or its school's)
-		[[nodiscard]] float HeatOf(const Tuning& a_t, School a_school) const noexcept { return _heat[Index(a_t, a_school)]; }
-		// the heat the bar shows: the shared meter, or the last school's
-		[[nodiscard]] float Shown(const Tuning& a_t) const noexcept { return _heat[Index(a_t, _last)]; }
-		[[nodiscard]] Stage StageOf(const Tuning& a_t, School a_school) const noexcept
+		// the stage now: the Heat's, Overdrive while it lasts, Cold in the cooldown
+		[[nodiscard]] Stage StageNow(const Tuning& a_t) const noexcept
 		{
 			return _state == State::kOverdrive ? Stage::kOverdrive : _state == State::kCooldown ? Stage::kCold :
-			                                                                                      StageAt(a_t, HeatOf(a_t, a_school));
+			                                                                                      StageAt(a_t, _heat);
 		}
-		[[nodiscard]] Stage ShownStage(const Tuning& a_t) const noexcept { return StageOf(a_t, _last); }
 
 		// a spell's magnitude multiplier now
-		[[nodiscard]] float Bonus(const Tuning& a_t, School a_school) const noexcept
+		[[nodiscard]] float Bonus(const Tuning& a_t) const noexcept
 		{
 			if (_state == State::kCooldown) {
 				return a_t.weaker ? 1.0f - std::clamp(a_t.weakerBy, 0.0f, 0.9f) : 1.0f;
 			}
-			return StageBonus(a_t, StageOf(a_t, a_school));
+			return StageBonus(a_t, StageNow(a_t));
 		}
 
 		// how fast magicka regenerates now, as a fraction of normal
@@ -270,37 +420,41 @@ namespace Heat
 			return _state == State::kCooldown && a_t.slowMagicka ? std::clamp(a_t.slowMagickaTo, 0.0f, 1.0f) : 1.0f;
 		}
 
-		// nothing going on: no heat, no Overdrive, no cooldown
+		// nothing going on: no charge, no heat, no Overdrive, no cooldown
 		[[nodiscard]] bool Idle() const noexcept
 		{
-			return _state == State::kBuilding && std::ranges::all_of(_heat, [](float h) { return h <= 0.0f; });
+			return _state == State::kBuilding && _heat <= 0.0f && std::ranges::all_of(_charge, [](float c) { return c <= 0.0f; });
 		}
 
-		// ---- the bench: set the heat, force a stage or Overdrive
-		void SetHeat(const Tuning& a_t, float a_heat) noexcept
+		// ---- the bench: set the charge or the heat, force a stage or Overdrive
+		void SetCharge(const Tuning& a_t, float a_charge) noexcept
 		{
-			if (_state != State::kBuilding) {
-				_state = State::kBuilding;
-				_timer = 0.0f;
-			}
-			_heat[Index(a_t, _last)] = std::isfinite(a_heat) ? std::clamp(a_heat, 0.0f, kFull) : 0.0f;
+			Build();
+			_charge[Index(a_t, _last)] = Fraction(a_charge);
 			_sinceCast = 0.0f;
+		}
+		void SetHeat(float a_heat) noexcept
+		{
+			Build();
+			_heat = Fraction(a_heat);
 		}
 		void ForceStage(const Tuning& a_t, Stage a_stage) noexcept
 		{
 			if (a_stage == Stage::kOverdrive) {
-				SetHeat(a_t, kFull);
+				SetCharge(a_t, kFull);
 				Start(a_t);
 				return;
 			}
-			const float at = a_stage == Stage::kCold ? 0.0f : StageThreshold(a_t, a_stage);
-			SetHeat(a_t, at);
+			SetHeat(a_stage == Stage::kCold ? 0.0f : StageThreshold(a_t, a_stage));
 		}
 		void Reset() noexcept { *this = Meter{}; }
 
 	private:
+		[[nodiscard]] static float       Clamp(float a_v, float a_lo, float a_hi) noexcept { return std::isfinite(a_v) ? std::clamp(a_v, a_lo, a_hi) : a_lo; }
 		[[nodiscard]] static float       Delta(float a_delta) noexcept { return std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f; }
+		[[nodiscard]] static float       Fraction(float a_v) noexcept { return std::isfinite(a_v) ? std::clamp(a_v, 0.0f, kFull) : 0.0f; }
 		[[nodiscard]] static float       Speed(const Tuning& a_t) noexcept { return std::isfinite(a_t.gain) ? std::clamp(a_t.gain, 0.0f, 5.0f) : 1.0f; }
+		[[nodiscard]] static bool        FocusGate(const Tuning& a_t) noexcept { return a_t.heatGate && a_t.gate == Gate::kFocus; }
 		[[nodiscard]] static std::size_t Index(const Tuning& a_t, School a_school) noexcept
 		{
 			return a_t.perSchool ? std::min<std::size_t>(static_cast<std::size_t>(a_school), kSchools - 1) : 0;
@@ -314,44 +468,85 @@ namespace Heat
 			}
 			return kFull;
 		}
-		[[nodiscard]] float Peak() const noexcept { return *std::ranges::max_element(_heat); }
+		[[nodiscard]] bool Full() const noexcept { return *std::ranges::max_element(_charge) >= kFull; }
 
-		void Start(const Tuning& a_t) noexcept
+		void Build() noexcept
 		{
-			_state = State::kOverdrive;
-			_timer = std::max(a_t.burst, 0.1f);
-			_heat.fill(0.0f);
-			_heat[0] = kFull;  // shown full while it lasts (the shared meter, or the last school's)
-			_heat[Index(a_t, _last)] = kFull;
+			if (_state != State::kBuilding) {
+				_state = State::kBuilding;
+				_timer = 0.0f;
+			}
 		}
 
-		void Add(const Tuning& a_t, School a_school, float a_gain) noexcept
+		// Overdrive by itself: automatic, or a vent-gate press waiting for the heat to fall below the red line
+		void StartIfLet(const Tuning& a_t) noexcept
 		{
-			if (_state != State::kBuilding || !std::isfinite(a_gain) || a_gain <= 0.0f) {
+			if (_state != State::kBuilding || !Full()) {
+				_waiting = false;
 				return;
 			}
-			auto& h = _heat[Index(a_t, a_school)];
-			if (_started && a_school != _last) {
-				// another school: the meter it was building loses heat, once, before this cast adds any
-				auto& before = _heat[Index(a_t, _last)];
-				before = std::max(before - std::max(a_t.switchLoss, 0.0f), 0.0f);
-			}
-			const bool same = _started && a_school == _last;
-			h = std::min(h + a_gain * (same ? 1.0f + std::max(a_t.sameSchool, 0.0f) : 1.0f), kFull);
-			_last = a_school;
-			_started = true;
-			_sinceCast = 0.0f;
-			if (h >= kFull && a_t.mode == OverdriveMode::kAutomatic) {
+			const bool wants = a_t.mode == OverdriveMode::kAutomatic || (_waiting && a_t.mode == OverdriveMode::kKey);
+			if (wants && !FocusGate(a_t) && Gated(a_t) == GateNow::kOpen) {
 				Start(a_t);
 			}
 		}
 
-		std::array<float, kSchools> _heat{};
+		void Start(const Tuning& a_t) noexcept
+		{
+			_state = State::kOverdrive;
+			_burst = std::max(a_t.burst, 0.1f);
+			_timer = _burst;
+			_heatAtStart = _heat;
+			_focus = 0.0f;
+			_waiting = false;
+			_charge.fill(0.0f);
+			_charge[0] = kFull;  // shown full while it lasts (the shared bar, or the last school's)
+			_charge[Index(a_t, _last)] = kFull;
+		}
+
+		void AddHeat(const Tuning& a_t, float a_heat, int a_element) noexcept
+		{
+			const bool  same = a_element != 0 && a_element == _element;
+			const float add = a_heat * Clamp(a_t.heatUp, 0.0f, 5.0f) * (same ? 1.0f + Clamp(a_t.heatSameElement, 0.0f, 3.0f) : 1.0f);
+			if (std::isfinite(add) && add > 0.0f) {
+				_heat = std::min(_heat + add, kFull);
+			}
+			if (a_element != 0) {
+				_element = a_element;
+			}
+		}
+
+		void Add(const Tuning& a_t, School a_school, float a_gain) noexcept
+		{
+			if (!std::isfinite(a_gain) || a_gain <= 0.0f) {
+				return;
+			}
+			auto& c = _charge[Index(a_t, a_school)];
+			if (_started && a_school != _last) {
+				// another school: the bar it was building loses charge, once, before this cast adds any
+				auto& before = _charge[Index(a_t, _last)];
+				before = std::max(before - std::max(a_t.switchLoss, 0.0f), 0.0f);
+			}
+			const bool same = _started && a_school == _last;
+			c = std::min(c + a_gain * (same ? 1.0f + std::max(a_t.sameSchool, 0.0f) : 1.0f), kFull);
+			_last = a_school;
+			_started = true;
+			_sinceCast = 0.0f;
+		}
+
+		std::array<float, kSchools> _charge{};
+		float                       _heat{ 0.0f };
+		int                         _element{ 0 };
 		School                      _last{ School::kNone };
 		bool                        _started{ false };
 		float                       _sinceCast{ 0.0f };
 		State                       _state{ State::kBuilding };
 		float                       _timer{ 0.0f };
+		float                       _burst{ 6.0f };
+		float                       _heatAtStart{ 0.0f };
+		float                       _focus{ 0.0f };
+		bool                        _waiting{ false };
+		int                         _misfires{ 0 };
 	};
 
 	// ------------------------------------------------------------------ slow magicka, without changing anything that lasts

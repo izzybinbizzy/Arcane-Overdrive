@@ -2,12 +2,15 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The same file is copied into each of izzydoingit's plugins (split out of the fading module's settings text): each plugin
-// keeps its own settings and key table in SettingsText.h, and this does the reading and writing.
+// Split out of the fading module's settings text: the plugin keeps its settings and key table in SettingsText.h, and this
+// does the reading and writing. Each key names its section ([Settings] unless it says otherwise) and may carry a note,
+// written above it, so a file with sections can explain every line.
 //
 // The file is read the way people edit it: a byte order mark (Notepad's), any case in section and key names, spaces,
-// Windows line ends, and ; or # comments, on their own line or after a value. Every value is a whole number. A line
-// that is not a whole number, or names no setting, keeps the default and is reported; a retired key is skipped quietly.
+// Windows line ends, and ; or # comments, on their own line or after a value. Every value is a whole number. A key is
+// taken in any section (a line moved to the wrong section still counts, and an older one-section file still reads). A
+// line that is not a whole number, or names no setting, keeps the default and is reported; a retired key is skipped
+// quietly, and so is anything in a section the table does not use.
 
 #pragma once
 
@@ -35,6 +38,8 @@ namespace IniText
 		const char* name;
 		int (*get)(const S&);
 		void (*set)(S&, int);
+		const char* section{ "Settings" };
+		const char* note{ nullptr };
 	};
 
 	[[nodiscard]] inline bool SameText(std::string_view a, std::string_view b) noexcept
@@ -95,13 +100,16 @@ namespace IniText
 		std::vector<std::string> problems;  // "Key=value: why", for the log
 	};
 
-	// reads the [Settings] lines into a_s; a line that cannot be used keeps the default and is reported
+	// reads the lines of the table's sections into a_s; a line that cannot be used keeps the default and is reported
 	template <class S>
 	ReadResult Read(std::istream& a_in, S& a_s, std::span<const Key<S>> a_keys, std::span<const std::string_view> a_retired = {})
 	{
 		ReadResult  r;
 		std::string line;
-		bool        inSettings = false, first = true;
+		bool        inOurs = false, first = true;
+		const auto  ours = [a_keys](std::string_view a_section) {
+			return SameText(a_section, "Settings") || std::ranges::any_of(a_keys, [a_section](const Key<S>& k) { return SameText(a_section, k.section); });
+		};
 		while (std::getline(a_in, line)) {
 			std::string_view l = line;
 			if (first && l.starts_with("\xEF\xBB\xBF")) {
@@ -116,11 +124,11 @@ namespace IniText
 				continue;
 			}
 			if (l.front() == '[' && l.back() == ']') {
-				inSettings = SameText(Trim(l.substr(1, l.size() - 2)), "Settings");
+				inOurs = ours(Trim(l.substr(1, l.size() - 2)));
 				continue;
 			}
 			const auto eq = l.find('=');
-			if (!inSettings || eq == std::string_view::npos) {
+			if (!inOurs || eq == std::string_view::npos) {
 				continue;
 			}
 			const auto key = Trim(l.substr(0, eq));
@@ -141,11 +149,21 @@ namespace IniText
 		return r;
 	}
 
+	// a_header (its own lines, each starting "; "), then every key under its section, a section's header where it starts and
+	// each key's note above it
 	template <class S>
-	void Write(std::ostream& a_out, const S& a_s, std::span<const Key<S>> a_keys, std::string_view a_title)
+	void Write(std::ostream& a_out, const S& a_s, std::span<const Key<S>> a_keys, std::string_view a_header)
 	{
-		a_out << "; " << a_title << " - written by its menu (SKSE Menu Framework). Percent values are whole numbers.\n[Settings]\n";
+		a_out << a_header;
+		std::string_view section;
 		for (const auto& k : a_keys) {
+			if (!SameText(section, k.section)) {
+				a_out << (section.empty() ? "" : "\n") << '[' << k.section << "]\n";
+				section = k.section;
+			}
+			if (k.note) {
+				a_out << "; " << k.note << '\n';
+			}
 			a_out << k.name << '=' << k.get(a_s) << '\n';
 		}
 	}

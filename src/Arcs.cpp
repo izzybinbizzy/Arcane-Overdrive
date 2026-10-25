@@ -2,13 +2,15 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The heat meter as an add-on bar for Reticle Arcs (his answer 2026-10-18, checklist 28 (d): "use reticle arcs"; the author's
-// yes: "build around his mod using his api but don't add or change any code. just utilize the resources he provides. color
-// will be added when he releases that part."). Only Reticle Arcs' published interface is used - ReticleArcsAPI.h, Reticle
-// Arcs by Chiktabba (https://codeberg.org/chiktabba/ReticleArcs), MIT, copied unchanged; Reticle Arcs draws the bar in the
-// player's own look. The meter: heat 0-100 in four pieces (the stages), a soft flow along it at Warm and Hot, a pulse at
-// Overheating, the warning colour and an alarm while Overdrive counts down, then the burnout draining. No color is sent (his
-// word above). While Reticle Arcs shows it, our own bar steps aside (Menu.cpp DrawBar); without Reticle Arcs nothing changes.
+// The two bars as add-on bars for Reticle Arcs (his answer: "use reticle arcs"; the author's yes: "build around his mod
+// using his api but don't add or change any code. just utilize the resources he provides. color will be added when he
+// releases that part."). Only Reticle Arcs' published interface is used - ReticleArcsAPI.h, Reticle Arcs by Chiktabba
+// (https://codeberg.org/chiktabba/ReticleArcs), MIT, copied unchanged; Reticle Arcs draws the bars in the player's own look.
+//   the Overdrive bar   the charge; a rim when it is full and the gate is open, the warning colour while the gate holds a
+//                       full bar back; then Overdrive counting down with an alarm, and the burnout draining
+//   the Heat bar        the heat in four pieces (Warm, Hot, Overheating at the default stages), a soft flow at Warm and Hot, a
+//                       pulse at Overheating, the warning colour and an alarm in the red zone; it drains with Overdrive
+// No color is sent (his word above). While Reticle Arcs shows them, our own bars step aside; without it nothing changes.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
@@ -43,14 +45,13 @@ namespace Plugin
 
 		[[nodiscard]] float Part(float a_left, float a_of) { return std::clamp(a_left / std::max(a_of, 0.1f), 0.0f, 1.0f); }
 
-		void HeatBar(float, BarState& a_state)
+		void ChargeBar(float, BarState& a_state)
 		{
 			const auto s = Config();
 			if (!s.enabled || !s.arcHeat) {
 				return;
 			}
 			const auto v = PlayerView();
-			a_state.segments = 4;  // Warm, Hot, Overheating, Overdrive
 			switch (v.state) {
 			case State::kOverdrive:  // the burst counting down
 				a_state.active = true;
@@ -66,28 +67,45 @@ namespace Plugin
 				a_state.low = true;
 				return;
 			default:
-				if (v.heat <= 0.5f && !v.ready) {
+				if (v.charge <= 0.5f) {
 					return;
 				}
 				a_state.active = true;
-				a_state.percent = std::clamp(v.heat / Heat::kFull, 0.0f, 1.0f);
-				a_state.motion = v.stage == Heat::Stage::kOverheating                          ? Motion::kPulse :
-				                 v.stage == Heat::Stage::kWarm || v.stage == Heat::Stage::kHot ? Motion::kFlow :
-				                                                                                 Motion::kNone;
-				a_state.rim = v.ready;  // full and waiting for the Overdrive key
+				a_state.percent = std::clamp(v.charge / Heat::kFull, 0.0f, 1.0f);
+				a_state.rim = v.ready && v.gate == Heat::GateNow::kOpen;  // full, and the key would let it go
+				a_state.low = v.ready && v.gate != Heat::GateNow::kOpen;  // full, held back by the heat
 			}
 		}
 
-		// Reticle Arcs' settings page: heat climbing through the stages, Overdrive counting down, the burnout draining
-		void Preview(float a_time, BarState& a_state)
+		void HeatBar(float, BarState& a_state)
+		{
+			const auto s = Config();
+			if (!s.enabled || !s.arcHeat) {
+				return;
+			}
+			const auto v = PlayerView();
+			if (v.state == State::kCooldown || v.heat <= 0.5f) {
+				return;
+			}
+			a_state.active = true;
+			a_state.segments = 4;
+			a_state.percent = std::clamp(v.heat / Heat::kFull, 0.0f, 1.0f);
+			a_state.drain = v.state == State::kOverdrive;  // spent as power
+			a_state.low = v.redZone;
+			a_state.alarm = v.redZone;
+			a_state.motion = v.stage == Heat::Stage::kOverheating                          ? Motion::kPulse :
+			                 v.stage == Heat::Stage::kWarm || v.stage == Heat::Stage::kHot ? Motion::kFlow :
+			                                                                                 Motion::kNone;
+		}
+
+		// Reticle Arcs' settings page: the charge filling, Overdrive counting down, the burnout draining
+		void ChargePreview(float a_time, BarState& a_state)
 		{
 			const float t = std::fmod(std::max(a_time, 0.0f) / 6.0f, 1.0f);
 			a_state.active = true;
-			a_state.segments = 4;
 			if (t < 0.5f) {
 				a_state.percent = t / 0.5f;
-				a_state.motion = a_state.percent >= 0.75f ? Motion::kPulse : a_state.percent >= 0.25f ? Motion::kFlow :
-				                                                                                        Motion::kNone;
+				a_state.rim = a_state.percent >= 0.99f;
 			} else if (t < 0.75f) {
 				a_state.drain = true;
 				a_state.percent = 1.0f - (t - 0.5f) / 0.25f;
@@ -99,27 +117,49 @@ namespace Plugin
 				a_state.low = true;
 			}
 		}
+
+		// ... and the heat climbing through the stages into the red, then cooling
+		void HeatPreview(float a_time, BarState& a_state)
+		{
+			const float t = std::fmod(std::max(a_time, 0.0f) / 6.0f, 1.0f);
+			a_state.active = true;
+			a_state.segments = 4;
+			a_state.percent = t < 0.6f ? t / 0.6f : 1.0f - (t - 0.6f) / 0.4f;
+			a_state.low = a_state.alarm = a_state.percent >= 0.85f;
+			a_state.motion = a_state.percent >= 0.75f ? Motion::kPulse : a_state.percent >= 0.25f ? Motion::kFlow :
+			                                                                                        Motion::kNone;
+		}
 	}
 
 	void RegisterArcBar()
 	{
 		if (!::GetModuleHandleW(L"ReticleArcs.dll")) {
-			return;  // no Reticle Arcs: our own bar, as always
+			return;  // no Reticle Arcs: our own bars, as always
 		}
 		auto* arcs = ReticleArcsAPI::Request();
 		if (!arcs) {
-			SKSE::log::info("Reticle Arcs is too old for add-on bars; the heat meter stays our own bar");
+			SKSE::log::info("Reticle Arcs is too old for add-on bars; the bars stay our own");
 			return;
 		}
-		ReticleArcsAPI::BarDefinition bar;
-		bar.id = "ArcaneOverdriveHeat";
-		bar.name = "Arcane Overdrive heat";
-		bar.tooltip = "Arcane Overdrive's heat: Warm, Hot, Overheating, then Overdrive counting down and the burnout draining.";
-		bar.placement = "top";
-		bar.update = HeatBar;
-		bar.preview = Preview;
-		gTaken = arcs->RegisterBar(bar);
-		SKSE::log::info("Reticle Arcs (interface {}) {} the heat meter", arcs->GetVersion(), gTaken ? "took" : "refused (ReticleArcs.log says why)");
+		ReticleArcsAPI::BarDefinition charge;
+		charge.id = "ArcaneOverdriveCharge";
+		charge.name = "Arcane Overdrive";
+		charge.tooltip = "Arcane Overdrive's Overdrive bar: it fills as you cast, then Overdrive counting down and the burnout draining.";
+		charge.placement = "top";
+		charge.update = ChargeBar;
+		charge.preview = ChargePreview;
+		ReticleArcsAPI::BarDefinition heat;
+		heat.id = "ArcaneOverdriveHeat";
+		heat.name = "Arcane Overdrive heat";
+		heat.tooltip = "Arcane Overdrive's Heat: how fast you cast - Warm, Hot, Overheating, and the red zone.";
+		heat.placement = "top";
+		heat.update = HeatBar;
+		heat.preview = HeatPreview;
+		const bool tookCharge = arcs->RegisterBar(charge);
+		const bool tookHeat = arcs->RegisterBar(heat);
+		gTaken = tookCharge && tookHeat;
+		SKSE::log::info("Reticle Arcs (interface {}): the Overdrive bar {}, the Heat bar {}", arcs->GetVersion(), tookCharge ? "taken" : "refused",
+			tookHeat ? "taken" : "refused (ReticleArcs.log says why)");
 	}
 
 	bool ArcBarTaken() noexcept { return gTaken.load(std::memory_order_relaxed); }

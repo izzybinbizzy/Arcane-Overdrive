@@ -146,15 +146,18 @@ namespace Plugin
 			}
 		}
 
-		// the player's spell projectiles in the world, from the game's own projectile lists
-		std::vector<RE::NiPointer<RE::Projectile>> PlayerSpellProjectiles(RE::PlayerCharacter* a_player)
+		// the player's spell projectiles in the world, from the game's own projectile lists (main thread only: the two lists
+		// are kept from frame to frame so a frame allocates nothing)
+		const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellProjectiles(RE::PlayerCharacter* a_player)
 		{
-			std::vector<RE::NiPointer<RE::Projectile>> out;
-			auto*                                      mgr = RE::Projectile::Manager::GetSingleton();
+			static std::vector<RE::NiPointer<RE::Projectile>> out;
+			static std::vector<RE::ProjectileHandle>          handles;
+			out.clear();
+			handles.clear();
+			auto* mgr = RE::Projectile::Manager::GetSingleton();
 			if (!mgr) {
 				return out;
 			}
-			std::vector<RE::ProjectileHandle> handles;
 			{
 				RE::BSSpinLockGuard guard(mgr->projectileLock);
 				for (const auto* list : { &mgr->unlimited, &mgr->limited, &mgr->pending }) {
@@ -188,20 +191,23 @@ namespace Plugin
 		                    state == Heat::Meter::State::kCooldown  ? Overload::Phase::kBurnout :
 		                                                              Overload::Phase::kBuilding;
 		const float left = a_v.timerOf > 0.0f ? a_v.timer / a_v.timerOf : 0.0f;
-		const float target = a_s.enabled && a_s.spellGrowth ? Overload::Power(phase, a_v.heat / Heat::kFull, left, a_s.growthMax) : 1.0f;
+		const float target = a_s.enabled && a_s.spellGrowth ? Overload::Power(phase, a_v.charge / Heat::kFull, left, a_s.growthMax) : 1.0f;
 		gPower = Overload::Ease(gPower, target, kEaseRate, a_dt);
 		if (std::abs(gPower - target) < 0.002f) {
 			gPower = target;  // settled: back to exactly 1 when the meter is cold, so nothing is touched any more
 		}
 		const float ferocity = Overload::Ferocity(gPower);
-		const bool  sputter = a_s.enabled && a_s.burnoutFlicker && phase == Overload::Phase::kBurnout;
+		// a misfire sputters the spells for a moment, burnout flicker or not
+		const bool  misfire = a_s.enabled && a_v.misfire > 0.0f;
+		const bool  sputter = misfire || (a_s.enabled && a_s.burnoutFlicker && phase == Overload::Phase::kBurnout);
+		const float flicker = misfire ? a_v.misfire : left;
 		// the burnout dips the hand lights and brings them back (his answer 2026-10-18, checklist 28 (c)) - a hand-light
 		// change, so behind Light growth like the stages' growth (Hands.cpp)
 		const float dip = a_s.lightGrowth && phase == Overload::Phase::kBurnout ? Overload::BurnoutDip(left) : 1.0f;
 		std::size_t arts = 0, projectiles = 0, out = 0;
 		if (player && a_s.enabled) {
 			for (std::size_t hand = 0; hand < 2; ++hand) {
-				const bool shows = !sputter || Overload::Shows(gTime, left, static_cast<std::uint32_t>(0x51ED + hand * 0x9E37));
+				const bool shows = !sputter || Overload::Shows(gTime, flicker, static_cast<std::uint32_t>(0x51ED + hand * 0x9E37));
 				gLight[hand] = Overload::LightWhen(shows) * dip;
 				out += shows ? 0 : 1;
 				auto* caster = player->GetActorRuntimeData().magicCasters[hand];
@@ -220,7 +226,7 @@ namespace Plugin
 						continue;
 					}
 					const bool beam = proj->GetFormType() == RE::FormType::ProjectileBeam;
-					const bool shows = !sputter || Overload::Shows(gTime, left, seed += 0x9E3779B9u);
+					const bool shows = !sputter || Overload::Shows(gTime, flicker, seed += 0x9E3779B9u);
 					Grow(root, beam ? 1.0f : gPower, shows);
 					SpeedAll(root, ferocity);
 					++projectiles;
