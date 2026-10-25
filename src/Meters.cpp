@@ -60,6 +60,18 @@ namespace Plugin
 		std::mutex gViewLock;
 		MeterView  gView;
 
+		// each frame's charges for TrueHUD, which asks on its own thread for every bar it draws: read without the meters' lock
+		std::atomic<float>                       gPlayerCharge{ 0.0f };
+		std::mutex                               gChargeLock;
+		std::unordered_map<std::uint32_t, float> gEnemyCharges;  // by the actor's handle
+
+		void PublishCharges(float a_player, std::unordered_map<std::uint32_t, float>&& a_enemies)
+		{
+			gPlayerCharge = a_player;
+			std::lock_guard lock(gChargeLock);
+			gEnemyCharges = std::move(a_enemies);
+		}
+
 		bool Counts(const SpellInfo& a_info, const Settings& a_s) { return Heat::BuildsHeat(a_info.facts, a_s.counts); }
 
 		// an enemy's bars: no key, so Overdrive goes by itself when its gate lets it (the focus gate, which needs a key or
@@ -246,6 +258,8 @@ namespace Plugin
 			ReleaseHands();
 			ReleaseOverload();
 			ReleaseMarks();
+			UpdateTrueHud({}, s);  // switched off: TrueHUD's special bar is given back
+			PublishCharges(0.0f, {});
 			std::lock_guard lock(gViewLock);
 			gView = {};
 			return;
@@ -342,6 +356,11 @@ namespace Plugin
 			view.bonus = m.Bonus(t);
 			view.regen = m.MagickaRegen(t);
 			view.enemies = gEnemies.size();
+			std::unordered_map<std::uint32_t, float> enemyCharges;
+			for (const auto& [key, track] : gEnemies) {
+				enemyCharges.emplace(key, track.meter.Charge(enemyTuning));
+			}
+			PublishCharges(view.charge, std::move(enemyCharges));
 		}
 		if (backlash) {
 			Backlash(player, t, s.debugLog);
@@ -398,12 +417,14 @@ namespace Plugin
 
 	float ChargeOf(RE::Actor* a_actor)
 	{
-		const auto s = Config();
-		if (!a_actor || !s.enabled) {
+		if (!a_actor) {
 			return 0.0f;
 		}
-		std::lock_guard lock(gLock);
-		const auto*     track = TrackOf(a_actor, s, false);
-		return track ? track->meter.Charge(track == &gPlayer ? s.tuning : EnemyTuning(s.tuning)) : 0.0f;
+		if (a_actor->IsPlayerRef()) {
+			return gPlayerCharge.load();
+		}
+		std::lock_guard lock(gChargeLock);
+		const auto      it = gEnemyCharges.find(a_actor->GetHandle().native_handle());
+		return it != gEnemyCharges.end() ? it->second : 0.0f;
 	}
 }

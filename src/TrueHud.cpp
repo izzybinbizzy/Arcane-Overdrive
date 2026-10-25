@@ -35,11 +35,15 @@ namespace Plugin
 	{
 		using TRUEHUD_API::APIResult;
 
-		TRUEHUD_API::IVTrueHUD2* gApi = nullptr;
-		bool                     gOwned = false, gWanted = false, gAsked = false, gWasReady = false;
-		std::uint32_t            gColor = 0;
-		int                      gMisfires = 0;
-		std::atomic<int>         gState{ static_cast<int>(TrueHudState::kMissing) };
+		constexpr auto kAskAgain = std::chrono::seconds(10);  // another mod may give the special bar up later
+
+		TRUEHUD_API::IVTrueHUD2*              gApi = nullptr;
+		bool                                  gOwned = false, gWasReady = false;
+		std::chrono::steady_clock::time_point gNextAsk{};
+		bool                                  gTakenLogged = false;  // said once, not every 10 s
+		std::uint32_t                         gColor = 0;
+		int                                   gMisfires = 0;
+		std::atomic<int>                      gState{ static_cast<int>(TrueHudState::kMissing) };
 
 		// the bar's color for the Heat's stage, 0xRRGGBB: tan cold, amber, orange, flame, red in the red zone, white-hot in
 		// Overdrive, ash in the burnout
@@ -79,7 +83,10 @@ namespace Plugin
 				gOwned = gApi->RegisterSpecialResourceFunctions(handle, TRUEHUD_API::SpecialResourceCallback(Current), TRUEHUD_API::SpecialResourceCallback(Most), true) ==
 				         APIResult::OK;
 			}
-			SKSE::log::info("TrueHUD's special bar: {}", gOwned ? "the Overdrive bar" : "held by another mod - left to it");
+			if (gOwned || r != APIResult::AlreadyTaken || !gTakenLogged) {
+				SKSE::log::info("TrueHUD's special bar: {}", gOwned ? "the Overdrive bar" : "held by another mod - left to it, asked again every 10 s");
+				gTakenLogged = !gOwned;
+			}
 		}
 
 		void Let()
@@ -91,6 +98,7 @@ namespace Plugin
 			gApi->ReleaseSpecialResourceBarControl(handle);
 			gOwned = false;
 			gColor = 0;
+			gNextAsk = {};  // switched on again: asked at once
 			SKSE::log::info("TrueHUD's special bar: given back (switched off)");
 		}
 	}
@@ -108,12 +116,9 @@ namespace Plugin
 			return;
 		}
 		const bool want = a_s.enabled && a_s.bar;
-		if (want != gWanted) {
-			gWanted = want;
-			gAsked = false;  // asked once per change of the switch, never every frame
-		}
-		if (want && !gOwned && !gAsked) {
-			gAsked = true;
+		const auto now = std::chrono::steady_clock::now();
+		if (want && !gOwned && now >= gNextAsk) {
+			gNextAsk = now + kAskAgain;
 			Take();
 		} else if (!want && gOwned) {
 			Let();

@@ -40,7 +40,7 @@ namespace Plugin
 		using ReticleArcsAPI::Motion;
 		using State = Heat::Meter::State;
 
-		std::atomic<bool> gTaken{ false };
+		std::atomic<bool> gTaken{ false }, gInstalled{ false };
 
 		[[nodiscard]] float Part(float a_left, float a_of) { return std::clamp(a_left / std::max(a_of, 0.1f), 0.0f, 1.0f); }
 
@@ -135,6 +135,7 @@ namespace Plugin
 		if (!::GetModuleHandleW(L"ReticleArcs.dll")) {
 			return;  // no Reticle Arcs: TrueHUD's bar only
 		}
+		gInstalled = true;
 		auto* arcs = ReticleArcsAPI::Request();
 		if (!arcs) {
 			SKSE::log::info("Reticle Arcs is too old for add-on bars; TrueHUD's bar only");
@@ -162,4 +163,5 @@ namespace Plugin
 	}
 
 	bool ArcBarTaken() noexcept { return gTaken.load(std::memory_order_relaxed); }
+	bool ArcsInstalled() noexcept { return gInstalled.load(std::memory_order_relaxed); }
 }

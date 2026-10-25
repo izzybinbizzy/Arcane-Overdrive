@@ -252,8 +252,9 @@ namespace Plugin
 			ImGuiMCP::SameLine(column);
 			ImGuiMCP::BeginDisabled(!ArcBarTaken());
 			Toggle("Bars in Reticle Arcs", s.arcHeat,
-				ArcBarTaken() ? "The Overdrive and Heat bars as arcs round the crosshair, in Reticle Arcs' own look (set where they sit in its menu)." :
-								"Reticle Arcs draws these bars, and it is not installed.",
+				ArcBarTaken()   ? "The Overdrive and Heat bars as arcs round the crosshair, in Reticle Arcs' own look (set where they sit in its menu)." :
+				ArcsInstalled() ? "Reticle Arcs is installed but did not take these bars (too old for add-on bars - its log says why)." :
+								  "Reticle Arcs draws these bars, and it is not installed.",
 				save);
 			ImGuiMCP::EndDisabled();
 
@@ -325,7 +326,8 @@ namespace Plugin
 			{
 				const auto                   ov = OverloadNow();
 				static constexpr const char* kTrueHud[]{ "not installed", "switched off", "held by another mod", "the Overdrive bar" };
-				ImGuiMCP::Text("TrueHUD's special bar: %s   Reticle Arcs: %s", kTrueHud[static_cast<int>(TrueHudNow())], ArcBarTaken() ? "took the bars" : "not installed");
+				ImGuiMCP::Text("TrueHUD's special bar: %s   Reticle Arcs: %s", kTrueHud[static_cast<int>(TrueHudNow())], ArcBarTaken() ? "took the bars" : ArcsInstalled() ? "installed, refused the bars" :
+																																											 "not installed");
 				// in milliseconds, the unit a frame is measured in (a 60 fps frame is 16.7 ms)
 				const auto fc = FrameCostNow();
 				ImGuiMCP::TextDisabled("this mod a frame: %.3f ms (most %.3f)", fc.usAvg / 1000.0f, fc.usMax / 1000.0f);

@@ -277,12 +277,12 @@ namespace Plugin
 
 	void NoteSpawned(RE::TESObjectREFR* a_ref)
 	{
-		if (!a_ref) {
-			return;
+		if (!a_ref || gPowerNow.load(std::memory_order_relaxed) <= 1.001f) {
+			return;  // the spells are not grown: nothing made now would be either
 		}
 		const auto       handle = a_ref->GetHandle();
 		std::scoped_lock lock(gNoteLock);
-		if (gNoted.size() < 64) {
+		if (gNoted.size() < 256) {
 			gNoted.push_back(handle);
 		}
 	}

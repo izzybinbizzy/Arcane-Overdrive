@@ -131,8 +131,9 @@ namespace Plugin
 	[[nodiscard]] bool CapturingKey();
 
 	// ------------------------------------------------------------------ Arcs.cpp: the heat meter as a Reticle Arcs bar
-	void               RegisterArcBar();        // SKSE's post-load: Reticle Arcs takes add-on bars only until data load
-	[[nodiscard]] bool ArcBarTaken() noexcept;  // Reticle Arcs took it (the switch decides whether it shows)
+	void               RegisterArcBar();          // SKSE's post-load: Reticle Arcs takes add-on bars only until data load
+	[[nodiscard]] bool ArcBarTaken() noexcept;    // Reticle Arcs took it (the switch decides whether it shows)
+	[[nodiscard]] bool ArcsInstalled() noexcept;  // Reticle Arcs is loaded, whether or not it took the bars
 
 	// ------------------------------------------------------------------ Menu.cpp
 	void RegisterMenu();
