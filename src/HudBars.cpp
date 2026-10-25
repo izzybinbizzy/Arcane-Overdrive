@@ -2,9 +2,9 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// The bars on the HUD: the Overdrive bar and, right above it, the thin Heat bar, each ONE quad painted by BarShader.h - dark glass in a dark iron
-// frame, the spell's own kind of effect inside, nothing can leave the frame and it stays sharp at any size. The shader is
-// compiled once on a worker thread (a first compile can stall a frame) and bound for each quad by an ImGui draw callback that
+// The bars on the HUD: the Overdrive bar and, right above it, the thin Heat bar, each ONE quad painted by BarShader.h -
+// dark glass in a dark iron frame, the spell's own kind of effect inside, nothing can leave the frame and it stays sharp at
+// any size. The shader is compiled once on a worker thread (a first compile can stall a frame) and bound for each quad by an ImGui draw callback that
 // carries that quad's own numbers. Until it is ready - or on a PC without the compiler - a plain bar stands in, so the HUD
 // never shows nothing. The colors are the spell's own (SpellArt.cpp: its light, else its art) when they have a hue, else
 // the look's. Everything here runs on the render thread (the HUD element), except LookStatsNow and BenchForceLook.
