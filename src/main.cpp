@@ -37,11 +37,17 @@
 //   Marks.h         the scorch / frost marks as plain numbers: the cap, the refresh, the lifetime, the hurt ticks - tests
 //   Marks.cpp       finds the Overheating impacts, shows each mark with a vanilla hazard's model, hurts who stands in it
 //   DevBench.cpp    what DevBench can read and do
+//   Clash*          the clashes and spell struggles (Crossfire's code): ClashCore.* the game-free core - tests/test_clash.cpp;
+//                   ClashPass.cpp the pass once a frame; ClashStruggle.cpp locked streams; ClashClassify.cpp what a projectile
+//                   is; ClashAim.cpp auto lock; ClashSettings.cpp the files; ClashMenu.cpp its two pages; ClashDevBench.cpp
 //   Plugin.h        what they share      PCH.h  what they all include
 //   MenuStyle.h     the menu look every plugin of ours shares (Dynamic Wards' copy is the master)
-//   DevBenchAPI.*, SKSEMenuFramework.h  other authors' headers, copied unchanged (their licenses beside them)
+//   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h  other authors' headers, copied unchanged (their
+//                   licenses beside them; TDM's is GPL-3.0, as this plugin)
 
 #include "Plugin.h"
+#include "ClashShared.h"
+#include "Translation.h"
 
 namespace
 {
@@ -52,6 +58,7 @@ namespace
 		{
 			func(a_this, a_delta);
 			Plugin::Frame(a_delta);
+			Crossfire::Update(a_delta);  // the clashes and spell struggles (ClashPass.cpp)
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 		static void                                    Install()
@@ -177,6 +184,41 @@ namespace
 		}
 	};
 
+	// a spray's hits (FlameProjectile::AddImpact, vfunc 0xBD): while it is locked in a struggle, a hit past the meeting point
+	// is dropped - the foe's spray stops where the two meet
+	struct FlameAddImpact
+	{
+		static void thunk(RE::FlameProjectile* a_this, RE::TESObjectREFR* a_ref, const RE::NiPoint3& a_at, const RE::NiPoint3& a_velocity,
+			RE::hkpCollidable* a_collidable, std::int32_t a_arg6, std::uint32_t a_arg7)
+		{
+			if (Crossfire::Struggles::FlameHitPastFront(a_this, a_at)) {
+				return;
+			}
+			func(a_this, a_ref, a_at, a_velocity, a_collidable, a_arg6, a_arg7);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// a concentration spray hurts what its target pick finds (FlameProjectile::RunTargetPick, vfunc 0xB7; measured in
+	// Crossfire: its damage does not come through AddImpact). While the spray is locked the only thing past the meeting point
+	// is the other caster, so a locked spray picks no target at all
+	struct FlameTargetPick
+	{
+		static bool                                    thunk(RE::FlameProjectile* a_this) { return Crossfire::Struggles::FlameLocked(a_this) ? false : func(a_this); }
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// auto lock: a one-shot bolt (Lightning Bolt) is aimed as it picks its target (BeamProjectile::RunTargetPick, the same slot)
+	struct BeamTargetPick
+	{
+		static bool thunk(RE::BeamProjectile* a_this)
+		{
+			Crossfire::LockBeam(a_this);
+			return func(a_this);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	void OnDataLoaded()
 	{
 		Plugin::LoadSettings();
@@ -190,7 +232,20 @@ namespace
 			input->AddEventSink(InputSink::Get());
 		}
 		SKSE::log::info("hooked the player update and each effect as it lands; listening for spell casts and the Overdrive key");
+		// the clashes and spell struggles
+		Crossfire::LoadSettings();
+		Crossfire::Survey();
+		Crossfire::FindFearSpell();
+		Crossfire::FindStandInBursts();
+		Crossfire::FindClashArt();
+		REL::Relocation<std::uintptr_t> flame{ RE::FlameProjectile::VTABLE[0] };
+		FlameAddImpact::func = flame.write_vfunc(REL::Relocate(0xBD, 0xBD, 0xBE), FlameAddImpact::thunk);    // SE/AE 0xBD, VR 0xBE
+		FlameTargetPick::func = flame.write_vfunc(REL::Relocate(0xB7, 0xB7, 0xB8), FlameTargetPick::thunk);  // SE/AE 0xB7, VR 0xB8
+		REL::Relocation<std::uintptr_t> beam{ RE::BeamProjectile::VTABLE[0] };
+		BeamTargetPick::func = beam.write_vfunc(REL::Relocate(0xB7, 0xB7, 0xB8), BeamTargetPick::thunk);
+		SKSE::log::info("clashes: {}", Translation::Load("Data/SKSE/Plugins/SpellMasteryHeat Clash/Translation.json"));
 		Plugin::RegisterMenu();
+		Crossfire::RegisterMenu();  // its two pages in Arcane Overdrive's section
 	}
 }
 
@@ -211,13 +266,20 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kPostLoad:
 			Plugin::OfferToDevBench();
+			Crossfire::OfferToDevBench();
+			Crossfire::FindTdm();
 			Plugin::RegisterArcBar();  // Reticle Arcs takes add-on bars now or never
 			break;
 		case SKSE::MessagingInterface::kDataLoaded:
 			OnDataLoaded();
 			break;
 		case SKSE::MessagingInterface::kPreLoadGame:
+		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
+			Crossfire::Reset();  // every projectile and caster handle belongs to the world going away
+			if (a_msg->type == SKSE::MessagingInterface::kPostLoadGame) {
+				break;
+			}
 			// every meter belongs to the world going away; hand lights go back as they were found
 			Plugin::ResetAll();
 			Plugin::ReleaseHands();
