@@ -135,6 +135,7 @@ namespace Crossfire
 			if (!BeginTable("reactions", kColumns, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
 				return;
 			}
+			PushTextWrapPos(-1.0f);  // one word a cell: never broken inside it (the page's own wrap would split "Annihilate")
 			TableSetupColumn(T("vs"));
 			for (std::size_t j = 0; j < Core::kElements; ++j) {
 				TableSetupColumn(TS(Core::ElementName(static_cast<Core::Element>(j))));
@@ -156,6 +157,7 @@ namespace Crossfire
 					TextColored(ActionColor(action), "%s", TS(Core::ActionName(action)));
 				}
 			}
+			PopTextWrapPos();
 			EndTable();
 		}
 
