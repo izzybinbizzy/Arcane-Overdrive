@@ -65,38 +65,29 @@ namespace
 		}
 	};
 
-	// ------------------------------------------------------------------ each effect, as it lands on a target
-	// The damage bonus, route (a) of the design: MagicTarget::AddTarget (slot 0x01 of an actor's MagicTarget table) is
-	// handed each effect of a spell as it is applied to a target, with the magnitude it will be created with
-	// (AddTargetData::magnitude). That magnitude is multiplied by the caster's bonus before the game goes on. No plugin
-	// file. ASSUMED, to confirm in game: (1) the MagicTarget table is the fifth of Character's and PlayerCharacter's
-	// (VTABLE[4]); (2) the effect is created from this magnitude, so changing it changes the damage. Both are checked by
-	// TESTING.md's first test (a firebolt's damage with Overdrive forced, against without).
+	// ------------------------------------------------------------------ each new effect, as it takes its perks
+	// The damage bonus: ActiveEffect::AdjustForPerks (slot 0x00 of each effect class's table) is where the game sets a new
+	// effect's final magnitude from the caster's perks, before the effect starts; the caster's bonus multiplies it right
+	// after. MagicTarget::AddTarget's magnitude and power were tried first and measured to change nothing (a Firebolt hit the
+	// same with either raised). The value-modifier classes are the ones that damage or drain.
 	template <class T>
-	struct AddTarget
+	struct PerksAdjusted
 	{
-		static bool thunk(RE::MagicTarget* a_this, RE::MagicTarget::AddTargetData& a_data)
+		static void thunk(T* a_this, RE::Actor* a_caster, RE::MagicTarget* a_target)
 		{
-			auto* caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
-			if (caster && a_data.magicItem && a_data.effect && a_data.effect->baseEffect) {
-				const float k = Plugin::Multiplier(caster, a_data.magicItem, a_data.effect->baseEffect);
-				if (k != 1.0f && std::isfinite(a_data.magnitude)) {
-					// the effect is made inside the call from the boosted magnitude; the caller's own number is put back after
-					// it, so a caller that hands the same data on (the next target of an area spell) never boosts twice
-					const float own = a_data.magnitude;
-					a_data.magnitude = own * k;
-					const bool added = func(a_this, a_data);
-					a_data.magnitude = own;
-					return added;
+			func(a_this, a_caster, a_target);
+			if (a_caster && a_this->spell && a_this->effect && a_this->effect->baseEffect && std::isfinite(a_this->magnitude)) {
+				const float k = Plugin::Multiplier(a_caster, a_this->spell, a_this->effect->baseEffect);
+				if (k != 1.0f) {
+					a_this->magnitude *= k;
 				}
 			}
-			return func(a_this, a_data);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 		static void                                    Install()
 		{
-			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[4] };  // MagicTarget
-			func = vtbl.write_vfunc(0x01, thunk);
+			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[0] };
+			func = vtbl.write_vfunc(0x00, thunk);
 		}
 	};
 
@@ -239,8 +230,12 @@ namespace
 	{
 		Plugin::LoadSettings();
 		PlayerUpdate::Install();
-		AddTarget<RE::Character>::Install();
-		AddTarget<RE::PlayerCharacter>::Install();
+		PerksAdjusted<RE::ValueModifierEffect>::Install();
+		PerksAdjusted<RE::DualValueModifierEffect>::Install();
+		PerksAdjusted<RE::AbsorbEffect>::Install();
+		PerksAdjusted<RE::AccumulatingValueModifierEffect>::Install();
+		PerksAdjusted<RE::PeakValueModifierEffect>::Install();
+		PerksAdjusted<RE::TargetValueModifierEffect>::Install();
 		Made<RE::Explosion>::Install();
 		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {

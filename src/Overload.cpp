@@ -209,6 +209,20 @@ namespace Plugin
 			}
 		}
 
+		// A controller's clock is frequency x time + phase (time since its start for an app-init one, the game's clock
+		// otherwise): a new frequency alone jumps the clock by seconds, and a held stream's particle system then threw its
+		// flames far off at every red-zone step. The phase moves with it, so the clock runs on from where it stood.
+		void Retime(RE::NiTimeController* a_ctrl, float a_frequency)
+		{
+			const float old = a_ctrl->frequency;
+			if (old == a_frequency || !std::isfinite(a_frequency)) {
+				return;
+			}
+			const bool appInit = a_ctrl->flags.any(RE::NiTimeController::Flag::kAnimType_AppInit);
+			a_ctrl->phase = Overload::RetimedPhase(a_ctrl->phase, appInit ? a_ctrl->lastTime - a_ctrl->startTime : a_ctrl->lastTime, old, a_frequency);
+			a_ctrl->frequency = a_frequency;
+		}
+
 		void Speed(RE::NiTimeController* a_ctrl, float a_ferocity)
 		{
 			auto [it, added] = gControllers.try_emplace(a_ctrl);
@@ -221,8 +235,8 @@ namespace Plugin
 			}
 			s.frame = gFrame;
 			const float want = std::isfinite(s.base) && s.base > 0.0f ? s.base * a_ferocity : a_ctrl->frequency;
-			a_ctrl->frequency = want;
-			s.written = want;
+			Retime(a_ctrl, want);
+			s.written = a_ctrl->frequency;
 		}
 
 		// every time controller under a model: on its nodes, its geometry (a particle system's emitters) and their shaders
@@ -268,7 +282,7 @@ namespace Plugin
 				auto& s = it->second;
 				if (gFrame - s.frame > kKeepFrames) {
 					if (s.ctrl && s.ctrl->frequency == s.written) {
-						s.ctrl->frequency = s.base;
+						Retime(s.ctrl.get(), s.base);
 					}
 					it = gControllers.erase(it);
 				} else {
@@ -337,7 +351,8 @@ namespace Plugin
 				}
 				if (!a_sp.owned) {
 					RE::Actor* owner = nullptr;
-					if (auto* x = ref->As<RE::Explosion>()) {
+					// a placed explosion by the game's own type info: As<> knows only the base record's form type, so it never matched
+					if (auto* x = skyrim_cast<RE::Explosion*>(ref.get())) {
 						owner = x->GetExplosionRuntimeData().actorOwner.get().get();
 					} else if (auto* z = ref->As<RE::Hazard>()) {
 						owner = z->GetHazardRuntimeData().ownerActor.get().get();

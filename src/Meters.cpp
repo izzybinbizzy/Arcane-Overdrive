@@ -12,7 +12,7 @@
 //   every frame    held spells, the Overdrive key (a press, and holding it for the focus gate), the cooling, the drain and
 //                  the clocks (Heat::Meter::Tick), the slow magicka, a misfire's backlash, the hand lights (Hands.cpp), and
 //                  what the bars and the Debug page show.
-//   the bonus      Multiplier, asked by the effect hook in main.cpp as each effect lands on a target, on whatever thread
+//   the bonus      Multiplier, asked by the effect hook in main.cpp as each new effect takes its perks, on whatever thread
 //                  the game applies it: everything here is behind one lock.
 //
 // Slow magicka during the cooldown: part of each frame's natural regeneration is taken back (Heat::TakeBack). Nothing on

@@ -105,7 +105,9 @@ namespace Crossfire
 			if (!a_shooter) {
 				return nullptr;
 			}
-			if (auto* player = a_shooter->As<RE::PlayerCharacter>()) {
+			// As<RE::PlayerCharacter>() never matches: the form type table knows only Character for actors
+			if (a_shooter->IsPlayerRef()) {
+				auto* player = static_cast<RE::PlayerCharacter*>(a_shooter);
 				if (!a_cfg.lockYours || TdmLocked()) {
 					return nullptr;  // off, or TDM has a target locked and aims the player's bolts itself
 				}

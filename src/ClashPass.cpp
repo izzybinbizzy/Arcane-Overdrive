@@ -232,7 +232,7 @@ namespace Crossfire
 			if (auto ref = handle.get()) {
 				const float k = std::isfinite(a_scale) ? std::clamp(a_scale, 0.5f, 3.0f) : 1.0f;
 				ref->GetReferenceRuntimeData().refScale = static_cast<std::uint16_t>(std::lround(k * 100.0f));
-				if (auto* x = ref->As<RE::Explosion>()) {
+				if (auto* x = skyrim_cast<RE::Explosion*>(ref.get())) {  // As<> knows only the base record's form type
 					auto& xd = x->GetExplosionRuntimeData();
 					if (std::isfinite(xd.radius)) {
 						xd.radius *= k;

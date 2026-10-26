@@ -114,6 +114,12 @@ namespace Overload
 		return 1.0f;
 	}
 
+	// a controller's clock = frequency x a_at + phase: the phase that keeps that clock where it is when the frequency changes
+	[[nodiscard]] inline float RetimedPhase(float a_phase, float a_at, float a_old, float a_new) noexcept
+	{
+		return std::isfinite(a_at) && std::isfinite(a_old) && std::isfinite(a_new) ? a_phase + a_at * (a_old - a_new) : a_phase;
+	}
+
 	// how fierce: the art's own animation runs this much faster (flames lick faster, frost streams harder)
 	[[nodiscard]] inline float Ferocity(float a_power) noexcept
 	{

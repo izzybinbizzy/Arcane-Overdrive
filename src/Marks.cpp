@@ -120,9 +120,15 @@ namespace Plugin
 					if (!impact || !now.insert(impact).second || gSeen.contains(impact)) {
 						continue;
 					}
-					const auto added = gPool.Add(PointOf(impact->desiredTargetLoc), element, a_r, PlaceOf(proj.get()));
+					// a spell that struck someone hit them at chest height: the mark goes on the ground at their feet, where it
+					// burns and where its reach finds them
+					auto at = impact->desiredTargetLoc;
+					if (const auto hit = impact->collidee.get(); hit && hit->As<RE::Actor>()) {
+						at.z = hit->GetPositionZ();
+					}
+					const auto added = gPool.Add(PointOf(at), element, a_r, PlaceOf(proj.get()));
 					if (added.id) {
-						Show(added, impact->desiredTargetLoc, element, a_r.life, proj->GetParentCell() ? proj->GetParentCell() : a_player->GetParentCell());
+						Show(added, at, element, a_r.life, proj->GetParentCell() ? proj->GetParentCell() : a_player->GetParentCell());
 					}
 				}
 			}

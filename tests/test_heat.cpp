@@ -947,6 +947,18 @@ namespace
 		CHECK(Near(Overload::FocusPull(Overload::kFocusSeconds), 1.0f) && Near(Overload::FocusPull(5.0f), 1.0f) && Near(Overload::FocusPull(-1.0f), 1.0f));
 		CHECK(Overload::FocusPull(0.1f) < 1.0f && Overload::FocusPull(0.1f) > 0.6f && Overload::FocusPull(0.5f) > 1.0f);
 		CHECK(Near(Overload::FocusPull(std::nanf("")), 1.0f));
+		// a new speed keeps a controller's clock where it stood: frequency x time + phase is the same before and after,
+		// however long the controller has run (a held stream after minutes of play), through a run of red-zone steps
+		for (const float at : { 0.5f, 19.0f, 3600.0f }) {
+			float phase = 0.25f, freq = 1.0f;
+			for (const float next : { 2.2f, 0.15f, 1.6f, 1.0f }) {
+				const float before = freq * at + phase;
+				phase = Overload::RetimedPhase(phase, at, freq, next);
+				freq = next;
+				CHECK(std::abs(freq * at + phase - before) <= 1e-3f * std::max(1.0f, at));
+			}
+		}
+		CHECK(Near(Overload::RetimedPhase(0.5f, std::nanf(""), 1.0f, 2.0f), 0.5f));
 	}
 
 	// ------------------------------------------------------------------ the scorch and frost marks (Marks.h)
