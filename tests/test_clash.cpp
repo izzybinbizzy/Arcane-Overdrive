@@ -194,6 +194,13 @@ namespace
 		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 20, 20, 25 }) == Look::kShadow);
 		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 0, 0, 0 }) == Look::kArcane);
 		CHECK(LookFrom("Plain Bolt") == Look::kArcane);
+		// only the model's file name is searched: nearly every spell's model sits in the folder "Magic"
+		CHECK(FileOf("Magic\\PlainBolt.nif") == "PlainBolt.nif");
+		CHECK(FileOf("magic/sub/x.nif") == "x.nif");
+		CHECK(FileOf("x.nif") == "x.nif");
+		CHECK(FileOf("Magic\\").empty());
+		CHECK(LookFrom(std::string("Plain Bolt ") + std::string(FileOf("Magic\\PlainBolt.nif")), Element::kFrost) == Look::kFrost);
+		CHECK(LookFrom("Plain Bolt Magic\\PlainBolt.nif", Element::kFrost) == Look::kArcane);  // why the folder is cut off
 		LookFacts magic;
 		magic.words = "Plain Bolt";
 		magic.resistsMagic = true;

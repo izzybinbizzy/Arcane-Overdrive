@@ -877,6 +877,12 @@ namespace Crossfire::Core
 		return Look::kArcane;
 	}
 
+	std::string_view FileOf(std::string_view a_path) noexcept
+	{
+		const auto cut = a_path.find_last_of("\\/");
+		return cut == std::string_view::npos ? a_path : a_path.substr(cut + 1);
+	}
+
 	std::string_view PairOf(Look a, Look b, bool a_sameSpell) noexcept
 	{
 		if (a_sameSpell) {

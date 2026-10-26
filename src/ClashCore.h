@@ -319,7 +319,8 @@ namespace Crossfire::Core
 	};
 	// The game's and the overhauls' element tags, then words in the names and model path, then its element, then the
 	// hue of its light - the order the census of his spells was sorted by.
-	[[nodiscard]] Look LookOf(const LookFacts& a_facts) noexcept;
+	[[nodiscard]] Look             LookOf(const LookFacts& a_facts) noexcept;
+	[[nodiscard]] std::string_view FileOf(std::string_view a_path) noexcept;  // the part after the last \ or /
 
 	// a special pair's own design when these two meet (Steam, Plasma, ShatterStorm, Eclipse; Resonance for the same
 	// spell), or empty

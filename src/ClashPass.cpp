@@ -246,11 +246,12 @@ namespace Crossfire
 		RE::BSTempEffectParticle* ModelHere(const char* a_model, Vec3 a_at, float a_scale, RE::Projectile* a_projectile)
 		{
 			const char*        model = a_model;
-			RE::TESObjectREFR* place = a_projectile;
-			if (!place) {
-				place = RE::PlayerCharacter::GetSingleton();
+			auto*              player = RE::PlayerCharacter::GetSingleton();
+			RE::TESObjectREFR* place = a_projectile ? static_cast<RE::TESObjectREFR*>(a_projectile) : player;
+			auto*              cell = place ? place->GetParentCell() : nullptr;
+			if (!cell && player) {
+				cell = player->GetParentCell();  // a projectile just killed may have left its cell already
 			}
-			auto* cell = place ? place->GetParentCell() : nullptr;
 			if (!model || !cell || !Core::Finite(a_at)) {
 				return nullptr;
 			}
@@ -330,14 +331,16 @@ namespace Crossfire
 		}
 
 		// what a clash shows where a projectile went: its own (or its element's) explosion when it only shows, else its
-		// element's stand-in model, and its look's design in its own color. False when there was nothing to show.
+		// element's stand-in model, and its look's design in its own color (and `a_also`'s, when it looks different).
+		// False when there was nothing to show, or the limiter held it back.
 		bool ShowBurst(RE::Projectile* a_p, const RE::BGSProjectile* a_base, const Info& a_info, Vec3 a_at, std::uint64_t a_pair,
-			const Core::Config& a_cfg)
+			const Core::Config& a_cfg, const Info* a_also = nullptr)
 		{
 			auto*       explosion = BurstOf(a_p, a_base, a_info.element, a_cfg);
 			const char* model = !explosion && a_cfg.standInBursts ? StandInModel(a_info.element) : nullptr;
 			const char* art = ClashArt(a_info.look);
-			if ((!explosion && !model && !art) || !gBursts.Allow(a_pair)) {
+			const char* also = a_also && a_also->look != a_info.look ? ClashArt(a_also->look) : nullptr;
+			if ((!explosion && !model && !art && !also) || !gBursts.Allow(a_pair)) {
 				return false;
 			}
 			if (explosion) {
@@ -346,10 +349,12 @@ namespace Crossfire
 				ModelHere(model, a_at, a_cfg.burstScale, a_p);
 			}
 			TintLater(ModelHere(art, a_at, a_cfg.burstScale, a_p), &a_info);
+			TintLater(ModelHere(also, a_at, a_cfg.burstScale, a_p), a_also);
 			return true;
 		}
 
-		// a special pair's own design on top of both bursts (fire and frost: steam; the same spell: resonance)
+		// a special pair's own design on top of both bursts (fire and frost: steam; the same spell: resonance) - only where
+		// a burst was allowed, so it obeys the same limits
 		void ShowPair(const Info& a, const Info& b, Vec3 a_at, RE::Projectile* a_p, const Core::Config& a_cfg)
 		{
 			const bool same = a.spell && a.spell == b.spell;
@@ -361,21 +366,20 @@ namespace Crossfire
 			}
 		}
 
-		void Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg)
+		// true when it burst where it went
+		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg)
 		{
 			auto* p = a_e.ref.get();
 			if (a_e.ghost || !p) {
-				return;  // a bolt's line kept after its projectile went: immune, nothing to change
+				return false;  // a bolt's line kept after its projectile went: immune, nothing to change
 			}
 			if (a_kill) {
-				if (a_cfg.explosions) {
-					ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg);
-				}
+				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg);
 				p->Kill();
 				a_e.killed = true;
 				gKilled.insert_or_assign(a_e.handle, gClock);
 				gStats.destroyed.fetch_add(1, std::memory_order_relaxed);
-				return;
+				return burst;
 			}
 			if (a_after < a_before) {
 				a_e.track->strength = a_after;
@@ -394,6 +398,7 @@ namespace Crossfire
 					}
 				}
 			}
+			return false;
 		}
 
 		void Reward(const Entry& a_mine, const Entry& a_theirs, bool a_theirsKilled, const Core::Config& a_cfg)
@@ -787,8 +792,9 @@ namespace Crossfire
 				Tell(a, b, o, c.touch.point, pair, cfg);
 				if (cfg.explosions) {
 					Entry* live = !a.ghost && a.ref ? &a : (!b.ghost && b.ref ? &b : nullptr);
-					ShowBurst(live ? live->ref.get() : nullptr, live ? live->base : a.base, a.info, c.touch.point, pair, cfg);
-					ShowPair(a.info, b.info, c.touch.point, live ? live->ref.get() : nullptr, cfg);
+					if (ShowBurst(live ? live->ref.get() : nullptr, live ? live->base : a.base, a.info, c.touch.point, pair, cfg, &b.info)) {
+						ShowPair(a.info, b.info, c.touch.point, live ? live->ref.get() : nullptr, cfg);
+					}
 				}
 				for (Entry* x : { &a, &b }) {
 					if (!x->ghost && x->ref) {
@@ -819,11 +825,12 @@ namespace Crossfire
 					o.killB ? "destroyed" : (o.strengthB < sb ? std::format("left {:.0f}", o.strengthB) : "untouched"));
 			}
 			Tell(a, b, o, c.touch.point, pair, cfg);  // before Settle: it reads the strengths as they were
-			if (cfg.explosions && (o.killA || o.killB)) {
-				ShowPair(a.info, b.info, c.touch.point, !a.ghost && a.ref ? a.ref.get() : (!b.ghost && b.ref ? b.ref.get() : nullptr), cfg);
+			RE::Projectile* at = !a.ghost && a.ref ? a.ref.get() : (!b.ghost && b.ref ? b.ref.get() : nullptr);
+			const bool      burstA = Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg);
+			const bool      burstB = Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg);
+			if (burstA || burstB) {
+				ShowPair(a.info, b.info, c.touch.point, at, cfg);
 			}
-			Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg);
-			Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg);
 			Reward(a, b, o.killB, cfg);
 			Reward(b, a, o.killA, cfg);
 		}

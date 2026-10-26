@@ -18,7 +18,8 @@
 //   - OUR OWN EFFECTS (meshes\ArcaneOverdrive\<Focus|Sparks><Fire|Frost|Shock|Arcane>.nif): as Overdrive fires, motes rush
 //     into each casting hand and flare there (Focus flare); in the red zone a hand spits a few sparks when its spell swells
 //     or blinks out (Sparks in the red). Each is played once where the hand is, as the game plays an impact - no form is
-//     made. The look is the hand's spell's element; a model that is not installed is never asked for.
+//     made - and moved with the hand while it lasts. The look is the hand's spell's element; a model that is not installed
+//     is never asked for.
 // Every value is written from a remembered base, as the hand lights are (Hands.cpp): a value someone else has written since
 // is taken as the new base, and a node or controller no longer ours is put back as it was found.
 
@@ -124,16 +125,62 @@ namespace Plugin
 			return e >= 1 && e <= 3 ? static_cast<std::size_t>(e) : 0;
 		}
 
-		// one of our effects played once where a hand is, at a_scale, as the game plays an impact
-		bool PlayAt(RE::PlayerCharacter* a_player, const RE::NiAVObject* a_hand, Effect a_effect, std::size_t a_look, float a_scale, float a_life)
+		// our effects that ride along with a hand while they last (a temp effect stays where it was played)
+		struct Riding
+		{
+			RE::NiPointer<RE::BSTempEffect> effect;
+			std::size_t                     hand{ 0 };
+			float                           until{ 0.0f };
+		};
+		std::vector<Riding> gRiding;  // main thread
+
+		[[nodiscard]] bool Finite(const RE::NiPoint3& a_p) { return std::isfinite(a_p.x) && std::isfinite(a_p.y) && std::isfinite(a_p.z); }
+
+		// where a hand is now: its casting art, else its magic node
+		[[nodiscard]] const RE::NiAVObject* HandNode(RE::PlayerCharacter* a_player, std::size_t a_hand)
+		{
+			auto* caster = a_hand < 2 ? a_player->GetActorRuntimeData().magicCasters[a_hand] : nullptr;
+			if (!caster) {
+				return nullptr;
+			}
+			if (const auto* art = caster->castingArtData.attachedArt.get()) {
+				return art;
+			}
+			return caster->GetMagicNode();
+		}
+
+		// one of our effects played once where a hand is, at a_scale, as the game plays an impact, then kept on the hand
+		bool PlayAt(RE::PlayerCharacter* a_player, std::size_t a_hand, const RE::NiAVObject* a_at, Effect a_effect, std::size_t a_look, float a_scale,
+			float a_life)
 		{
 			const auto& model = gModels[a_effect][a_look];
 			auto*       cell = a_player->GetParentCell();
-			const auto& at = a_hand->world.translate;
-			if (model.empty() || !cell || !std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z)) {
+			const auto& at = a_at->world.translate;
+			if (model.empty() || !cell || !Finite(at)) {
 				return false;
 			}
-			return RE::BSTempEffectParticle::Spawn(cell, a_life, model.c_str(), RE::NiPoint3{}, at, a_scale, kSpawnFlags, nullptr) != nullptr;
+			auto* shown = RE::BSTempEffectParticle::Spawn(cell, a_life, model.c_str(), RE::NiPoint3{}, at, a_scale, kSpawnFlags, nullptr);
+			if (shown && gRiding.size() < 16) {
+				gRiding.push_back({ RE::NiPointer<RE::BSTempEffect>(shown), a_hand, gTime + a_life });
+			}
+			return shown != nullptr;
+		}
+
+		// once a frame: each riding effect moved by as much as its hand moved
+		void Ride(RE::PlayerCharacter* a_player)
+		{
+			std::erase_if(gRiding, [&](Riding& r) {
+				auto* shown = static_cast<RE::BSTempEffectParticle*>(r.effect.get());
+				if (!shown || !a_player || gTime > r.until) {
+					return true;
+				}
+				const auto* hand = HandNode(a_player, r.hand);
+				auto*       object = shown->particleObject.get();
+				if (hand && object && Finite(hand->world.translate) && Finite(object->world.translate)) {
+					object->local.translate += hand->world.translate - object->world.translate;
+				}
+				return false;
+			});
 		}
 
 		void Grow(RE::NiAVObject* a_node, float a_scale, bool a_shows)
@@ -403,7 +450,7 @@ namespace Plugin
 					SpeedAll(art, ferocity * wild.speed);
 					++arts;
 				}
-				if (art && fired && a_s.focusFlare && PlayAt(player, art, kFlare, LookOf(player, hand, caster), std::sqrt(gPower), kFlareLife)) {
+				if (art && fired && a_s.focusFlare && PlayAt(player, hand, art, kFlare, LookOf(player, hand, caster), std::sqrt(gPower), kFlareLife)) {
 					++gFlares;
 				}
 				// a spit of sparks when the red zone swells the hand's spell or blinks it out, once per step of it
@@ -411,7 +458,7 @@ namespace Plugin
 				if (art && a_s.redSparks && gWild > 0.0f && step != gSparkTick[hand]) {
 					gSparkTick[hand] = step;
 					if ((wild.size > 1.0f || !wild.shows) && gTime - gSparkAt[hand] >= kSparkGap &&
-						PlayAt(player, art, kSparks, LookOf(player, hand, caster), 1.0f, kSparkLife)) {
+						PlayAt(player, hand, art, kSparks, LookOf(player, hand, caster), 1.0f, kSparkLife)) {
 						gSparkAt[hand] = gTime;
 						++gSparks;
 					}
@@ -439,6 +486,7 @@ namespace Plugin
 			gLight[0] = 1.0f;
 			gLight[1] = 1.0f;
 		}
+		Ride(player);
 		const bool impactsOn = player && growing && a_s.impactsGrow;
 		if (!impactsOn) {
 			gSpawned.clear();  // switched off: what was grown goes back (PutBack, below)
@@ -464,6 +512,7 @@ namespace Plugin
 			gNoted.clear();
 		}
 		gSpawned.clear();
+		gRiding.clear();
 		gFrame += kKeepFrames + 2;
 		PutBack();
 		gPower = 1.0f;

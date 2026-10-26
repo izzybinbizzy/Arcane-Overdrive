@@ -89,7 +89,7 @@ namespace Crossfire
 		}
 
 		// the clash design: from the effect's tags, then words in the effect's, spell's and projectile's names and editor
-		// IDs (where the game keeps them) and the projectile's model path, then its element, then its light's hue
+		// IDs (where the game keeps them) and the projectile's model file, then its element, then its light's hue
 		[[nodiscard]] Core::Look LookFor(const RE::EffectSetting* a_effect, const RE::MagicItem* a_spell, const RE::BGSProjectile* a_base,
 			const Info& a_info)
 		{
@@ -103,22 +103,23 @@ namespace Crossfire
 				}
 			}
 			std::string words;
-			const auto  add = [&](const char* a_text) {
-				if (a_text && *a_text) {
+			const auto  add = [&](std::string_view a_text) {
+				if (!a_text.empty()) {
 					words.append(a_text).push_back(' ');
 				}
 			};
+			const auto text = [](const char* a_text) { return a_text ? std::string_view(a_text) : std::string_view(); };
 			if (a_effect) {
-				add(a_effect->GetFullName());
-				add(a_effect->GetFormEditorID());
+				add(text(a_effect->GetFullName()));
+				add(text(a_effect->GetFormEditorID()));
 			}
 			if (a_spell) {
-				add(a_spell->GetFullName());
-				add(a_spell->GetFormEditorID());
+				add(text(a_spell->GetFullName()));
+				add(text(a_spell->GetFormEditorID()));
 			}
 			if (a_base) {
-				add(a_base->GetFormEditorID());
-				add(a_base->GetModel());
+				add(text(a_base->GetFormEditorID()));
+				add(Core::FileOf(text(a_base->GetModel())));  // the file only: nearly every spell's folder is "Magic"
 			}
 			const Core::LookFacts facts{ a_info.element, std::span<const std::string_view>(tags.data(), count), words, false, a_info.absorb,
 				a_info.resist == RE::ActorValue::kResistMagic, a_info.light };

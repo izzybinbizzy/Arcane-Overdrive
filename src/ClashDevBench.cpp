@@ -67,7 +67,8 @@ namespace Crossfire
 					{ "betweenOthers", s.betweenOthers }, { "skillAlwaysWins", s.skillAlwaysWins }, { "surge", s.surge },
 					{ "breakCast", s.breakCast }, { "stagger", s.stagger }, { "messages", s.messages }, { "lockYours", c.lockYours },
 					{ "lockOthers", c.lockOthers }, { "steer", c.steer }, { "lockArrows", c.lockArrows }, { "lockCone", c.lockCone },
-					{ "steerRange", c.steerRange }, { "steerTurn", c.steerTurn }, { "notes", LoadNotes() } };
+					{ "steerRange", c.steerRange }, { "steerTurn", c.steerTurn }, { "headOnCatch", c.headOnCatch }, { "headOnCone", c.headOnCone },
+					{ "notes", LoadNotes() } };
 			}
 			return DevBenchGlue::Refusal("unknown action '" + action + "'", json::array({ "counters", "reload", "settings" }));
 		}
