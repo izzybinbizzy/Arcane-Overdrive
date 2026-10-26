@@ -69,14 +69,16 @@ namespace
 	// The damage bonus: ActiveEffect::AdjustForPerks (slot 0x00 of each effect class's table) is where the game sets a new
 	// effect's final magnitude from the caster's perks, before the effect starts; the caster's bonus multiplies it right
 	// after. MagicTarget::AddTarget's magnitude and power were tried first and measured to change nothing (a Firebolt hit the
-	// same with either raised). The value-modifier classes are the ones that damage or drain.
+	// same with either raised). Hooked: the value-modifier classes (damage and drains) and the other harmful ones.
 	template <class T>
 	struct PerksAdjusted
 	{
 		static void thunk(T* a_this, RE::Actor* a_caster, RE::MagicTarget* a_target)
 		{
 			func(a_this, a_caster, a_target);
-			if (a_caster && a_this->spell && a_this->effect && a_this->effect->baseEffect && std::isfinite(a_this->magnitude)) {
+			// a new effect only: one already running has had its bonus, and a second adjustment would compound it
+			if (a_caster && a_this->elapsedSeconds <= 0.0f && a_this->spell && a_this->effect && a_this->effect->baseEffect &&
+				std::isfinite(a_this->magnitude)) {
 				const float k = Plugin::Multiplier(a_caster, a_this->spell, a_this->effect->baseEffect);
 				if (k != 1.0f) {
 					a_this->magnitude *= k;
@@ -236,6 +238,16 @@ namespace
 		PerksAdjusted<RE::AccumulatingValueModifierEffect>::Install();
 		PerksAdjusted<RE::PeakValueModifierEffect>::Install();
 		PerksAdjusted<RE::TargetValueModifierEffect>::Install();
+		// the rest of "All harmful spell effects": fear, frenzy, calm (their magnitude is the level they work up to), paralysis,
+		// stagger, disarm, turn undead, banish
+		PerksAdjusted<RE::DemoralizeEffect>::Install();
+		PerksAdjusted<RE::FrenzyEffect>::Install();
+		PerksAdjusted<RE::CalmEffect>::Install();
+		PerksAdjusted<RE::ParalysisEffect>::Install();
+		PerksAdjusted<RE::StaggerEffect>::Install();
+		PerksAdjusted<RE::DisarmEffect>::Install();
+		PerksAdjusted<RE::TurnUndeadEffect>::Install();
+		PerksAdjusted<RE::BanishEffect>::Install();
 		Made<RE::Explosion>::Install();
 		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
