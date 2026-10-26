@@ -78,6 +78,54 @@ namespace Crossfire
 			return Core::Classify(facts, Live().keywords);
 		}
 
+		[[nodiscard]] std::optional<Core::Rgb> LightOf(const RE::EffectSetting* a_effect)
+		{
+			const auto* light = a_effect ? a_effect->data.light : nullptr;
+			if (!light) {
+				return std::nullopt;
+			}
+			const auto& c = light->data.color;
+			return Core::Rgb{ c.red, c.green, c.blue };
+		}
+
+		// the clash design: from the effect's tags, then words in the effect's, spell's and projectile's names and editor
+		// IDs (where the game keeps them) and the projectile's model file, then its element, then its light's hue
+		[[nodiscard]] Core::Look LookFor(const RE::EffectSetting* a_effect, const RE::MagicItem* a_spell, const RE::BGSProjectile* a_base,
+			const Info& a_info)
+		{
+			std::array<std::string_view, 32> tags{};
+			std::size_t                      count = 0;
+			for (std::uint32_t i = 0; a_effect && a_effect->keywords && i < a_effect->numKeywords && count < tags.size(); ++i) {
+				if (const auto* kw = a_effect->keywords[i]) {
+					if (const char* id = kw->GetFormEditorID(); id && *id) {
+						tags[count++] = id;
+					}
+				}
+			}
+			std::string words;
+			const auto  add = [&](std::string_view a_text) {
+				if (!a_text.empty()) {
+					words.append(a_text).push_back(' ');
+				}
+			};
+			const auto text = [](const char* a_text) { return a_text ? std::string_view(a_text) : std::string_view(); };
+			if (a_effect) {
+				add(text(a_effect->GetFullName()));
+				add(text(a_effect->GetFormEditorID()));
+			}
+			if (a_spell) {
+				add(text(a_spell->GetFullName()));
+				add(text(a_spell->GetFormEditorID()));
+			}
+			if (a_base) {
+				add(text(a_base->GetFormEditorID()));
+				add(Core::FileOf(text(a_base->GetModel())));  // the file only: nearly every spell's folder is "Magic"
+			}
+			const Core::LookFacts facts{ a_info.element, std::span<const std::string_view>(tags.data(), count), words, false, a_info.absorb,
+				a_info.resist == RE::ActorValue::kResistMagic, a_info.light };
+			return Core::LookOf(facts);
+		}
+
 		[[nodiscard]] const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item)
 		{
 			if (!a_item) {
@@ -148,6 +196,7 @@ namespace Crossfire
 				info.kind = Core::Kind::kArrow;
 				info.skill = RE::ActorValue::kArchery;
 				info.element = Core::Element::kPhysical;
+				info.look = Core::Look::kPhysical;
 				if (const auto* enchantEffect = MainEffect(enchantment)) {
 					if (const auto e = ElementOf(enchantEffect, false, false); e != Core::Element::kArcane) {
 						info.element = e;
@@ -170,6 +219,8 @@ namespace Crossfire
 				info.magnitude = top->effectItem.magnitude;
 			}
 			info.spell = spell;
+			info.light = LightOf(effect);
+			info.look = LookFor(effect, spell, a_base, info);
 			switch (type) {
 			case RE::FormType::ProjectileBeam:
 				info.kind = Core::Kind::kBeam;
@@ -245,7 +296,8 @@ namespace Crossfire
 	{
 		RE::SpellItem*                                 gFear = nullptr;
 		std::array<RE::BGSExplosion*, Core::kElements> gStandIn{};
-		std::array<std::string, Core::kElements>       gClashArt{};  // meshes\ArcaneOverdrive\Clash<Element>.nif, when there is one
+		std::array<std::string, Core::kLooks>          gClashArt{};  // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
+		std::unordered_map<std::string, std::string>   gPairArt;     // a pair's name -> its mesh, when there is one
 	}
 
 	// For each element, the burst a clash shows for a spell that has none of its own (Firebolt, Ice Spike, Lightning
@@ -294,24 +346,46 @@ namespace Crossfire
 		}
 	}
 
-	// Clash art: a mesh at `meshes\ArcaneOverdrive\Clash<Element>.nif` (loose or in an archive) plays where two projectiles meet,
-	// on top of the burst - none ships yet; a mesh made later (NifSkope) is picked up with no code change
+	namespace
+	{
+		[[nodiscard]] std::string ArtIfThere(std::string_view a_file)
+		{
+			const auto                   name = std::format("ArcaneOverdrive\\{}.nif", a_file);
+			RE::BSResourceNiBinaryStream stream("meshes\\" + name);
+			return stream.good() ? name : std::string();
+		}
+	}
+
+	// Clash art: `meshes\ArcaneOverdrive\Clash<Look>.nif` (loose or in an archive) plays where two projectiles meet, on top of
+	// the burst, and `ClashPair<Pair>.nif` where a special pair meets; a mesh that is not there is simply not shown
 	void FindClashArt()
 	{
-		for (std::size_t e = 0; e < Core::kElements; ++e) {
-			const auto                   name = std::format("ArcaneOverdrive\\Clash{}.nif", Core::ElementName(static_cast<Core::Element>(e)));
-			RE::BSResourceNiBinaryStream stream("meshes\\" + name);
-			gClashArt[e] = stream.good() ? name : std::string();
-			if (!gClashArt[e].empty()) {
-				SKSE::log::info("clash art for {}: meshes\\{}", Core::ElementName(static_cast<Core::Element>(e)), name);
+		for (std::size_t l = 0; l < Core::kLooks; ++l) {
+			const auto look = Core::LookName(static_cast<Core::Look>(l));
+			gClashArt[l] = ArtIfThere(std::format("Clash{}", look));
+			if (!gClashArt[l].empty()) {
+				SKSE::log::info("clash art for {}: meshes\\{}", look, gClashArt[l]);
+			}
+		}
+		gPairArt.clear();
+		for (const std::string_view pair : { "Steam", "Plasma", "ShatterStorm", "Eclipse", "Resonance" }) {
+			if (auto art = ArtIfThere(std::format("ClashPair{}", pair)); !art.empty()) {
+				SKSE::log::info("pair art for {}: meshes\\{}", pair, art);
+				gPairArt.emplace(std::string(pair), std::move(art));
 			}
 		}
 	}
 
-	const char* ClashArt(Core::Element a_element)
+	const char* ClashArt(Core::Look a_look)
 	{
-		const auto e = static_cast<std::size_t>(a_element);
-		return e < gClashArt.size() && !gClashArt[e].empty() ? gClashArt[e].c_str() : nullptr;
+		const auto l = static_cast<std::size_t>(a_look);
+		return l < gClashArt.size() && !gClashArt[l].empty() ? gClashArt[l].c_str() : nullptr;
+	}
+
+	const char* PairArt(std::string_view a_pair)
+	{
+		const auto it = a_pair.empty() ? gPairArt.end() : gPairArt.find(std::string(a_pair));
+		return it != gPairArt.end() ? it->second.c_str() : nullptr;
 	}
 
 	RE::BGSExplosion* StandInBurst(Core::Element a_element)

@@ -26,14 +26,11 @@
 //   Spells.cpp      what a spell is to the meter (school, kind, held, element) and which effects are boosted
 //   Meters.cpp      the bars: casts, held spells, the key, the clocks, slow magicka, a misfire's backlash, the bonus
 //   Hands.cpp       the lights on the casting hands, scaled (and the optional hand glow of its own)
-//   Menu.cpp        the settings and debug pages in SKSE Menu Framework, and the HUD element that draws the bars
-//   SpellLook.h     which HUD look a spell gets (his list of looks per spell type) - tests/test_heat.cpp
-//   Looks.cpp       a game spell read into SpellLook.h's facts
-//   SpellArt.cpp    the spell's own color (its light, else its art), for the bars
-//   BarShader.h     the bars' pixel shader: every spell kind's look, the frame, the Heat strip - drawn off the game by a bench
-//   HudBars.*       the high-res bars on the HUD: the Overdrive bar and the Heat bar, each one quad of BarShader.h
-//   Overload.h      the overcharge on the spells as plain numbers: growth in Overdrive, the burnout's sputter - tests
-//   Overload.cpp    puts them on the casting art in the hands and the player's spell projectiles
+//   Menu.cpp        the settings and debug pages in SKSE Menu Framework
+//   TrueHud.cpp     the Overdrive bar as TrueHUD's special bar, colored by the Heat
+//   Arcs.cpp        both bars as Reticle Arcs arcs round the crosshair
+//   Overload.h      the overcharge on the spells as plain numbers: growth with the bar, the red zone, the focus, the sputter - tests
+//   Overload.cpp    puts them on the casting art in the hands, the player's projectiles, explosions, hazards and hit effects
 //   Marks.h         the scorch / frost marks as plain numbers: the cap, the refresh, the lifetime, the hurt ticks - tests
 //   Marks.cpp       finds the Overheating impacts, shows each mark with a vanilla hazard's model, hurts who stands in it
 //   DevBench.cpp    what DevBench can read and do
@@ -42,8 +39,8 @@
 //                   is; ClashAim.cpp auto lock; ClashSettings.cpp the files; ClashMenu.cpp its two pages; ClashDevBench.cpp
 //   Plugin.h        what they share      PCH.h  what they all include
 //   MenuStyle.h     the menu look every plugin of ours shares (Dynamic Wards' copy is the master)
-//   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h  other authors' headers, copied unchanged (their
-//                   licenses beside them; TDM's is GPL-3.0, as this plugin)
+//   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h, TrueHUDAPI.h, ReticleArcsAPI.h  other authors'
+//                   headers, copied unchanged (their licenses beside them; TDM's and TrueHUD's are GPL-3.0, as this plugin)
 
 #include "Plugin.h"
 #include "ClashShared.h"
@@ -68,38 +65,50 @@ namespace
 		}
 	};
 
-	// ------------------------------------------------------------------ each effect, as it lands on a target
-	// The damage bonus, route (a) of the design: MagicTarget::AddTarget (slot 0x01 of an actor's MagicTarget table) is
-	// handed each effect of a spell as it is applied to a target, with the magnitude it will be created with
-	// (AddTargetData::magnitude). That magnitude is multiplied by the caster's bonus before the game goes on. No plugin
-	// file. ASSUMED, to confirm in game: (1) the MagicTarget table is the fifth of Character's and PlayerCharacter's
-	// (VTABLE[4]); (2) the effect is created from this magnitude, so changing it changes the damage. Both are checked by
-	// TESTING.md's first test (a firebolt's damage with Overdrive forced, against without).
+	// ------------------------------------------------------------------ each new effect, as it takes its perks
+	// The damage bonus: ActiveEffect::AdjustForPerks (slot 0x00 of each effect class's table) is where the game sets a new
+	// effect's final magnitude from the caster's perks, before the effect starts; the caster's bonus multiplies it right
+	// after. MagicTarget::AddTarget's magnitude and power were tried first and measured to change nothing (a Firebolt hit the
+	// same with either raised). Hooked: the value-modifier classes (damage and drains) and the other harmful ones.
 	template <class T>
-	struct AddTarget
+	struct PerksAdjusted
 	{
-		static bool thunk(RE::MagicTarget* a_this, RE::MagicTarget::AddTargetData& a_data)
+		static void thunk(T* a_this, RE::Actor* a_caster, RE::MagicTarget* a_target)
 		{
-			auto* caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
-			if (caster && a_data.magicItem && a_data.effect && a_data.effect->baseEffect) {
-				const float k = Plugin::Multiplier(caster, a_data.magicItem, a_data.effect->baseEffect);
-				if (k != 1.0f && std::isfinite(a_data.magnitude)) {
-					// the effect is made inside the call from the boosted magnitude; the caller's own number is put back after
-					// it, so a caller that hands the same data on (the next target of an area spell) never boosts twice
-					const float own = a_data.magnitude;
-					a_data.magnitude = own * k;
-					const bool added = func(a_this, a_data);
-					a_data.magnitude = own;
-					return added;
+			func(a_this, a_caster, a_target);
+			// a new effect only: one already running has had its bonus, and a second adjustment would compound it
+			if (a_caster && a_this->elapsedSeconds <= 0.0f && a_this->spell && a_this->effect && a_this->effect->baseEffect &&
+				std::isfinite(a_this->magnitude)) {
+				const float k = Plugin::Multiplier(a_caster, a_this->spell, a_this->effect->baseEffect);
+				if (k != 1.0f) {
+					a_this->magnitude *= k;
 				}
 			}
-			return func(a_this, a_data);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 		static void                                    Install()
 		{
-			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[4] };  // MagicTarget
-			func = vtbl.write_vfunc(0x01, thunk);
+			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[0] };
+			func = vtbl.write_vfunc(0x00, thunk);
+		}
+	};
+
+	// ------------------------------------------------------------------ each explosion and hazard as it is made
+	// Initialize (SE/AE 0xA2, VR 0xA3) runs once as one is made: it is noted, and Overload.cpp grows the player's to the size
+	// their spells had then
+	template <class T>
+	struct Made
+	{
+		static void thunk(T* a_this)
+		{
+			func(a_this);
+			Plugin::NoteSpawned(a_this);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+		static void                                    Install()
+		{
+			REL::Relocation<std::uintptr_t> vtbl{ T::VTABLE[0] };
+			func = vtbl.write_vfunc(REL::Relocate(0xA2, 0xA2, 0xA3), thunk);
 		}
 	};
 
@@ -223,15 +232,31 @@ namespace
 	{
 		Plugin::LoadSettings();
 		PlayerUpdate::Install();
-		AddTarget<RE::Character>::Install();
-		AddTarget<RE::PlayerCharacter>::Install();
+		PerksAdjusted<RE::ValueModifierEffect>::Install();
+		PerksAdjusted<RE::DualValueModifierEffect>::Install();
+		PerksAdjusted<RE::AbsorbEffect>::Install();
+		PerksAdjusted<RE::AccumulatingValueModifierEffect>::Install();
+		PerksAdjusted<RE::PeakValueModifierEffect>::Install();
+		PerksAdjusted<RE::TargetValueModifierEffect>::Install();
+		// the rest of "All harmful spell effects": fear, frenzy, calm (their magnitude is the level they work up to), paralysis,
+		// stagger, disarm, turn undead, banish
+		PerksAdjusted<RE::DemoralizeEffect>::Install();
+		PerksAdjusted<RE::FrenzyEffect>::Install();
+		PerksAdjusted<RE::CalmEffect>::Install();
+		PerksAdjusted<RE::ParalysisEffect>::Install();
+		PerksAdjusted<RE::StaggerEffect>::Install();
+		PerksAdjusted<RE::DisarmEffect>::Install();
+		PerksAdjusted<RE::TurnUndeadEffect>::Install();
+		PerksAdjusted<RE::BanishEffect>::Install();
+		Made<RE::Explosion>::Install();
+		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
 			holder->AddEventSink<RE::TESSpellCastEvent>(CastSink::Get());
 		}
 		if (auto* input = RE::BSInputDeviceManager::GetSingleton()) {
 			input->AddEventSink(InputSink::Get());
 		}
-		SKSE::log::info("hooked the player update and each effect as it lands; listening for spell casts and the Overdrive key");
+		SKSE::log::info("hooked the player update, each effect as it lands and each explosion / hazard as it is made; listening for spell casts and the Overdrive key");
 		// the clashes and spell struggles
 		Crossfire::LoadSettings();
 		Crossfire::Survey();
@@ -268,6 +293,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			Plugin::OfferToDevBench();
 			Crossfire::OfferToDevBench();
 			Crossfire::FindTdm();
+			Plugin::FindTrueHud();
 			Plugin::RegisterArcBar();  // Reticle Arcs takes add-on bars now or never
 			break;
 		case SKSE::MessagingInterface::kDataLoaded:
@@ -285,7 +311,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			Plugin::ReleaseHands();
 			Plugin::ReleaseOverload();
 			Plugin::ReleaseMarks();
-			Plugin::ForgetSpellArt();
+			Plugin::ForgetTrueHud();
 			break;
 		default:
 			break;

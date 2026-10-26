@@ -117,6 +117,7 @@ namespace Crossfire::Core
 		bool          lockable{ false };  // a stream that may lock in a spell struggle
 		bool          bolt{ false };      // a one-shot bolt with BoltsMeet on: two of them are paired though both are immune
 		float         radius{ 0.0f };
+		float         reach{ 0.0f };  // a flying bolt: radius it adds when it meets another flying head on (HeadOnCatch)
 		float         strength{ 0.0f };
 		Vec3          from, to;           // sphere: last frame -> this frame; beam: start -> end; barrier: `from` is the base centre
 		Vec3          across;             // barrier only: unit, horizontal, along the wall
@@ -132,13 +133,18 @@ namespace Crossfire::Core
 	};
 	[[nodiscard]] Box Bounds(const Body& a_body) noexcept;
 
-	// When during the frame (0..1) two bodies first touch, and where. False: they did not.
+	// two flying spheres, both with reach, moving within acos(a_cos) of straight at each other, `b` ahead of `a`
+	[[nodiscard]] bool     HeadOn(const Body& a, const Body& b, float a_cos) noexcept;
+	inline constexpr float kHeadOnReach = 40.0f;  // units each flying bolt adds at HeadOnCatch 100 %
+
+	// When during the frame (0..1) two bodies first touch, and where. False: they did not. Two bolts flying head on (HeadOn,
+	// a_headOnCos = the cosine of HeadOnCone; above 1 never) touch with their reach added to their radii.
 	struct Touch
 	{
 		float t{ 0.0f };
 		Vec3  point;
 	};
-	[[nodiscard]] bool FirstTouch(const Body& a, const Body& b, Touch& a_out) noexcept;
+	[[nodiscard]] bool FirstTouch(const Body& a, const Body& b, Touch& a_out, float a_headOnCos = 2.0f) noexcept;
 
 	// distance from a point to a barrier's rectangle
 	[[nodiscard]] float DistancePointBarrier(Vec3 p, const Body& a_barrier) noexcept;
@@ -154,7 +160,7 @@ namespace Crossfire::Core
 	// are lockable (two held beams meeting can start a struggle, though neither can be destroyed). Bodies that are not
 	// Valid() are skipped. `a_out` is cleared first and at most `a_max` contacts are kept (the earliest).
 	template <class F>
-	void FindContacts(std::span<const Body> a_bodies, F&& a_mayInteract, std::size_t a_max, std::vector<Contact>& a_out);
+	void FindContacts(std::span<const Body> a_bodies, F&& a_mayInteract, std::size_t a_max, std::vector<Contact>& a_out, float a_headOnCos = 2.0f);
 
 	// ------------------------------------------------------------------ what a touch does
 	enum class Action : std::uint8_t
@@ -271,6 +277,66 @@ namespace Crossfire::Core
 	// First the keyword lists, element by element in order, then the resist value, then a voice cone is Force;
 	// anything else is Arcane.
 	[[nodiscard]] Element Classify(const MagicFacts& a_facts, const std::array<std::vector<std::string>, kElements>& a_keywords) noexcept;
+
+	// ------------------------------------------------------------------ how a clash looks (the art only; who wins stays the Element's)
+	enum class Look : std::uint8_t
+	{
+		kFire,
+		kFrost,
+		kShock,
+		kPoison,
+		kWater,
+		kBlood,
+		kSun,
+		kAstral,
+		kShadow,
+		kNecrotic,
+		kWind,
+		kEarth,
+		kArcane,
+		kAbsorb,
+		kPhysical,
+		kForce,
+		kTotal
+	};
+	inline constexpr std::size_t   kLooks = static_cast<std::size_t>(Look::kTotal);
+	[[nodiscard]] std::string_view LookName(Look a_look) noexcept;
+
+	struct Rgb
+	{
+		std::uint8_t r{ 0 }, g{ 0 }, b{ 0 };
+	};
+
+	struct LookFacts
+	{
+		Element                           element{ Element::kArcane };
+		std::span<const std::string_view> keywords;  // the effect's keywords' editor IDs
+		std::string_view                  words;     // the effect's, spell's and projectile's names and IDs and its model path
+		bool                              arrow{ false };
+		bool                              absorb{ false };
+		bool                              resistsMagic{ false };
+		std::optional<Rgb>                light;  // the effect's light
+	};
+	// The game's and the overhauls' element tags, then words in the names and model path, then its element, then the
+	// hue of its light - the order the census of his spells was sorted by.
+	[[nodiscard]] Look             LookOf(const LookFacts& a_facts) noexcept;
+	[[nodiscard]] std::string_view FileOf(std::string_view a_path) noexcept;  // the part after the last \ or /
+
+	// a special pair's own design when these two meet (Steam, Plasma, ShatterStorm, Eclipse; Resonance for the same
+	// spell), or empty
+	[[nodiscard]] std::string_view PairOf(Look a, Look b, bool a_sameSpell) noexcept;
+
+	// How a block of a clash mesh takes the spell's light color - the contract with the mesh builder: a block named
+	// "...Hot" goes toward white, "...Pale" mostly white, a white one takes the color as it is, any other keeps its own.
+	enum class TintMode : std::uint8_t
+	{
+		kKeep,
+		kColor,
+		kHot,
+		kPale
+	};
+	[[nodiscard]] TintMode             TintModeOf(std::string_view a_block, float a_red, float a_green, float a_blue) noexcept;
+	[[nodiscard]] std::array<float, 3> Tinted(Rgb a_light, TintMode a_mode) noexcept;  // brightest channel 1
 
 	// ------------------------------------------------------------------ limits on explosions
 	// At most `a_perFrame` explosions a frame, and none for the same key (a pair of shooters) within `a_cooldown`
@@ -604,6 +670,8 @@ namespace Crossfire::Core
 		float minRadius{ 4.0f };
 		float maxRadius{ 256.0f };
 		float barrierHeight{ 160.0f };
+		float headOnCatch{ 100.0f };  // percent of kHeadOnReach: how much further two bolts flying head on catch each other
+		float headOnCone{ 25.0f };    // degrees off straight at each other that still count as head on
 		// [Clash]
 		float  overpowerRatio{ 2.0f };
 		bool   weakenSurvivor{ true };
@@ -668,7 +736,7 @@ namespace Crossfire::Core
 namespace Crossfire::Core
 {
 	template <class F>
-	void FindContacts(std::span<const Body> a_bodies, F&& a_mayInteract, std::size_t a_max, std::vector<Contact>& a_out)
+	void FindContacts(std::span<const Body> a_bodies, F&& a_mayInteract, std::size_t a_max, std::vector<Contact>& a_out, float a_headOnCos)
 	{
 		a_out.clear();
 		if (a_max == 0 || a_bodies.size() < 2) {
@@ -708,7 +776,7 @@ namespace Crossfire::Core
 					continue;
 				}
 				Touch touch;
-				if (FirstTouch(a_bodies[lo], a_bodies[hi], touch)) {
+				if (FirstTouch(a_bodies[lo], a_bodies[hi], touch, a_headOnCos)) {
 					a_out.push_back({ lo, hi, touch });
 				}
 			}

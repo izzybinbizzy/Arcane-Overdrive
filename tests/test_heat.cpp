@@ -8,7 +8,6 @@
 #include "SettingsText.h"
 #include "Overload.h"
 #include "Marks.h"
-#include "SpellLook.h"
 
 #include <cmath>
 #include <cstdint>
@@ -702,9 +701,7 @@ namespace
 		s.lightPerStage = 0.3f;
 		s.handGlow = false;
 		s.bar = false;
-		s.barX = 0.5f;
-		s.barY = 0.1f;
-		s.barWidth = 2.0f;
+		s.arcHeat = true;
 		s.counts = { true, true };
 		s.enemies = true;
 		s.debugLog = true;
@@ -725,6 +722,13 @@ namespace
 		s.tuning.backlashMagicka = 0.2f;
 		s.tuning.focusSeconds = 1.5f;
 		s.tuning.bonusOn = false;
+		s.impactsGrow = false;
+		s.impactGrowth = 0.4f;
+		s.redZoneWild = false;
+		s.wildness = 1.5f;
+		s.overdriveFocus = false;
+		s.focusFlare = false;
+		s.redSparks = false;
 		// both files, each with only its own keys; read back together they give every setting
 		std::stringstream menu, advanced;
 		SettingsText::WriteMenu(menu, s);
@@ -743,30 +747,31 @@ namespace
 		SettingsText::Read(advancedOnly, fromAdvanced);
 		CHECK(fromAdvanced.enabled && Near(fromAdvanced.tuning.heatUp, 1.3f));
 
-		std::istringstream edited("[Settings]\nGainSpeed=9999\nOverdrive=5\nOverdriveKey=-4\nDrainSpeed=1.5\nNope=3\nBarWidth=10\n");
+		std::istringstream edited("[Settings]\nGainSpeed=9999\nOverdrive=5\nOverdriveKey=-4\nDrainSpeed=1.5\nNope=3\nHandGlow=7\n");
 		Settings           e;
 		const auto         re = SettingsText::Read(edited, e);
 		CHECK(Near(e.tuning.gain, 3.0f));
 		CHECK(e.tuning.mode == OverdriveMode::kOff);
 		CHECK(e.overdriveKey == 0);
 		CHECK(Near(e.tuning.drain, 5.0f));
-		CHECK(Near(e.barWidth, 0.5f));
+		CHECK(e.handGlow);
 		CHECK(re.problems.size() == 2);
 
 		// a key counts in any section; an unknown key in one of ours is reported; another mod's section is left alone quietly
-		std::istringstream sections("[Heat]\nRedLine=70\nBarY=20\nNope=1\n[Overdrive]\nBurstSeconds=9\n[Someone Else]\nNope=2\nRedLine=10\n");
+		std::istringstream sections("[Heat]\nRedLine=70\nHandGlow=0\nNope=1\n[Overdrive]\nBurstSeconds=9\n[Someone Else]\nNope=2\nRedLine=10\n");
 		Settings           sec;
 		const auto         rsec = SettingsText::Read(sections, sec);
-		CHECK(Near(sec.tuning.redLine, 70.0f) && Near(sec.barY, 0.2f) && Near(sec.tuning.burst, 9.0f));
+		CHECK(Near(sec.tuning.redLine, 70.0f) && !sec.handGlow && Near(sec.tuning.burst, 9.0f));
 		CHECK(rsec.problems.size() == 1 && rsec.taken == 3);
 
 		// an older one-file ini (his: GainSpeed 300, BlazingAt, BarY 88, BarStyle 0) still reads: Blazing is Overheating, the one
-		// meter's gain speed is the Overdrive bar's, neither old name is written again, and the old bar style is skipped quietly
-		std::istringstream old("; Spell Mastery Heat\n[Settings]\nGainSpeed=300\nBlazingAt=80\nBarY=88\nBarStyle=0\nDrainSpeed=10\n");
+		// meter's gain speed is the Overdrive bar's, neither old name is written again, and the old bars' style and place are
+		// skipped quietly (the bars are TrueHUD's and Reticle Arcs' now)
+		std::istringstream old("; Spell Mastery Heat\n[Settings]\nGainSpeed=300\nBlazingAt=80\nBarY=88\nBarStyle=0\nBarX=17\nBarWidth=120\nDrainSpeed=10\n");
 		Settings           o;
 		const auto         ro = SettingsText::Read(old, o);
-		CHECK(Near(o.tuning.gain, 3.0f) && Near(o.tuning.at[2], 80.0f) && Near(o.barY, 0.88f) && Near(o.tuning.drain, 10.0f));
-		CHECK(ro.problems.empty() && ro.taken == 4);
+		CHECK(Near(o.tuning.gain, 3.0f) && Near(o.tuning.at[2], 80.0f) && Near(o.tuning.drain, 10.0f));
+		CHECK(ro.problems.empty() && ro.taken == 3);
 		CHECK(SettingsText::Apply(o, "blazingat", 70) && Near(o.tuning.at[2], 70.0f));
 		const std::string all = menu.str() + advanced.str();
 		CHECK(all.find("OverheatingAt=") != std::string::npos && all.find("Blazing") == std::string::npos && all.find("GainSpeed") == std::string::npos);
@@ -855,112 +860,10 @@ namespace
 		CHECK(rs.taken == static_cast<int>(std::size(SettingsText::kKeys)));
 	}
 
-	// ------------------------------------------------------------------ the spell -> look classifier (SpellLook.h, 2026-10-13)
-	namespace Looks
-	{
-		using namespace SpellLook;
-		using A = Archetype;
-
-		// one magic effect as the game's records hold it
-		Effect Fx(A a_type, Value a_on, Resist a_resist, School a_school, bool a_harmful, Keywords a_keys = {}, Value a_second = Value::kOther)
-		{
-			Effect e;
-			e.archetype = a_type;
-			e.primary = a_on;
-			e.secondary = a_second;
-			e.resist = a_resist;
-			e.school = a_school;
-			e.harmful = a_harmful;
-			e.keys = a_keys;
-			return e;
-		}
-
-		Look Of(std::initializer_list<Effect> a_effects) { return Classify(std::span<const Effect>(a_effects.begin(), a_effects.size())); }
-
-		constexpr Keywords kFireKey{ true, false, false, false, false };
-		constexpr Keywords kFrostKey{ false, true, false, false, false };
-		constexpr Keywords kShockKey{ false, false, true, false, false };
-		constexpr Keywords kRestoreKey{ false, false, false, true, false };
-		constexpr Keywords kWardKey{ false, false, false, false, true };
-		constexpr auto     kDes = School::kDestruction, kRes = School::kRestoration, kCon = School::kConjuration;
-		constexpr auto     kAlt = School::kAlteration, kIll = School::kIllusion;
-	}
-
-	void Classifier()
-	{
-		using namespace Looks;
-		// the elements: keywords first, then what resists the effect (vanilla Flames / Frostbite / Sparks shapes)
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kFire, kDes, true, kFireKey) }) == Look::kFire);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kFrost, kDes, true, kFrostKey),
-				  Fx(A::kValueModifier, Value::kStamina, Resist::kFrost, kDes, true, kFrostKey) }) == Look::kFrost);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kShock, kDes, true, kShockKey),
-				  Fx(A::kValueModifier, Value::kMagicka, Resist::kShock, kDes, true) }) == Look::kShock);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kFrost, kDes, true) }) == Look::kFrost);  // no keyword: the resistance
-		// Mora's Curse (Dragonborn.esm): the fire keyword AND poison resistance - the keyword wins
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kPoison, kDes, true, kFireKey) }) == Look::kFire);
-		// poison and disease: the vial (Poison Rune is Restoration, resisted by poison)
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kPoison, kRes, true) }) == Look::kPoison);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kDisease, kAlt, true) }) == Look::kPoison);
-		// sun / holy: Sun Fire and Stendarr's Aura carry no keyword and no resistance (Dawnguard.esm) - a harmful
-		// Restoration effect that lowers Health; Turn Undead by its archetype
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kNone, kRes, true) }) == Look::kSun);
-		CHECK(Of({ Fx(A::kTurnUndead, Value::kOther, Resist::kNone, kRes, true) }) == Look::kSun);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kNone, kDes, true) }) == Look::kGeneric);  // the same in Destruction: no element
-		// healing: a helpful raise of Health, the keyword, the cures; a ward is NOT healing
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kNone, kRes, false, kRestoreKey) }) == Look::kHealing);
-		CHECK(Of({ Fx(A::kPeakValueModifier, Value::kHealth, Resist::kNone, School::kNone, false) }) == Look::kHealing);
-		CHECK(Of({ Fx(A::kCureDisease, Value::kOther, Resist::kNone, kRes, false) }) == Look::kHealing);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kWard, Resist::kNone, kRes, false, kWardKey) }) == Look::kGeneric);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kOther, Resist::kNone, kRes, false) }) == Look::kHealing);  // a Restoration spell of no kind: its school
-		// the absorbs, by what they take
-		CHECK(Of({ Fx(A::kAbsorb, Value::kHealth, Resist::kNone, kDes, true) }) == Look::kAbsorbHealth);
-		CHECK(Of({ Fx(A::kAbsorb, Value::kMagicka, Resist::kNone, kDes, true) }) == Look::kAbsorbMagicka);
-		CHECK(Of({ Fx(A::kAbsorb, Value::kStamina, Resist::kNone, kDes, true) }) == Look::kAbsorbStamina);
-		CHECK(Of({ Fx(A::kAbsorb, Value::kOther, Resist::kNone, kDes, true) }) == Look::kGeneric);                  // an absorb of something else
-		CHECK(Of({ Fx(A::kAbsorb, Value::kHealth, Resist::kFire, kDes, true, kFireKey) }) == Look::kAbsorbHealth);  // the tube before the element
-		// conjuration: bound weapons have their own look, before the school
-		CHECK(Of({ Fx(A::kBoundWeapon, Value::kOther, Resist::kNone, kCon, false) }) == Look::kBound);
-		CHECK(Of({ Fx(A::kSummonCreature, Value::kOther, Resist::kNone, kCon, false) }) == Look::kConjuration);  // a flame atronach too: a summon
-		CHECK(Of({ Fx(A::kReanimate, Value::kOther, Resist::kNone, kCon, true) }) == Look::kConjuration);
-		CHECK(Of({ Fx(A::kSoulTrap, Value::kOther, Resist::kNone, kCon, true) }) == Look::kConjuration);
-		// illusion and alteration, by archetype, then by school
-		CHECK(Of({ Fx(A::kFrenzy, Value::kOther, Resist::kNone, kIll, true) }) == Look::kIllusion);
-		CHECK(Of({ Fx(A::kInvisibility, Value::kOther, Resist::kNone, kIll, false) }) == Look::kIllusion);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kOther, Resist::kNone, kIll, false) }) == Look::kIllusion);  // Muffle: its school
-		CHECK(Of({ Fx(A::kParalysis, Value::kOther, Resist::kNone, kAlt, true) }) == Look::kAlteration);
-		CHECK(Of({ Fx(A::kLight, Value::kOther, Resist::kNone, kAlt, false) }) == Look::kAlteration);              // Candlelight
-		CHECK(Of({ Fx(A::kPeakValueModifier, Value::kOther, Resist::kNone, kAlt, false) }) == Look::kAlteration);  // Oakflesh: its school
-		// the costliest effect's school only when no effect says what it is; a later effect that does wins over it
-		CHECK(Of({ Fx(A::kValueModifier, Value::kHealth, Resist::kNone, kDes, true), Fx(A::kValueModifier, Value::kOther, Resist::kFrost, kDes, true) }) ==
-			  Look::kFrost);
-		CHECK(Of({ Fx(A::kValueModifier, Value::kOther, Resist::kNone, kIll, false), Fx(A::kValueModifier, Value::kOther, Resist::kNone, kAlt, false) }) ==
-			  Look::kIllusion);
-		CHECK(Of({}) == Look::kGeneric);
-		CHECK(Of({ Fx(static_cast<A>(9999), Value::kOther, Resist::kOther, School::kNone, false) }) == Look::kGeneric);  // an unknown archetype
-
-		// every look has a name of its own; out of range is generic
-		std::set<std::string> names;
-		for (std::size_t i = 0; i < kLooks; ++i) {
-			names.insert(std::string(Name(static_cast<Look>(i))));
-		}
-		CHECK(names.size() == kLooks);
-		CHECK(Name(static_cast<Look>(200)) == "generic");
-	}
-
 	// ------------------------------------------------------------------ the overcharge on the spells (Overload.h)
 	void Overcharge()
 	{
 		using Overload::Phase;
-		// growth: a little while heat builds, double at Overdrive's start, falling as it drains (never below full heat's), 1 in burnout
-		CHECK(Near(Overload::Power(Phase::kBuilding, 0.0f, 0.0f, 1.0f), 1.0f));
-		CHECK(Near(Overload::Power(Phase::kBuilding, 1.0f, 0.0f, 1.0f), 1.25f));
-		CHECK(Overload::Power(Phase::kBuilding, 0.5f, 0.0f, 1.0f) < Overload::Power(Phase::kBuilding, 0.8f, 0.0f, 1.0f));
-		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 1.0f), 2.0f));
-		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 0.5f, 1.0f), 1.5f));
-		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 0.0f, 1.0f), 1.25f));
-		CHECK(Near(Overload::Power(Phase::kBurnout, 1.0f, 1.0f, 1.0f), 1.0f));
-		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 0.0f), 1.0f));   // growth off: never bigger
-		CHECK(Near(Overload::Power(Phase::kOverdrive, 1.0f, 1.0f, 50.0f), 3.0f));  // at most triple
 		// the burnout dip: down at the start, whole again at the end, rising the whole way
 		CHECK(Near(Overload::BurnoutDip(1.0f), Overload::kDipFloor));
 		CHECK(Near(Overload::BurnoutDip(0.0f), 1.0f));
@@ -970,7 +873,6 @@ namespace
 		}
 		CHECK(Near(Overload::BurnoutDip(std::numeric_limits<float>::quiet_NaN()), 1.0f));
 		CHECK(Near(Overload::BurnoutDip(-3.0f), 1.0f) && Near(Overload::BurnoutDip(9.0f), Overload::kDipFloor));
-		CHECK(Near(Overload::Power(Phase::kOverdrive, std::nanf(""), std::nanf(""), std::nanf("")), 1.0f));
 		// ferocity follows the size; easing never jumps or overshoots
 		CHECK(Near(Overload::Ferocity(1.0f), 1.0f) && Near(Overload::Ferocity(2.0f), 1.6f) && Near(Overload::Ferocity(std::nanf("")), 1.0f));
 		float v = 1.0f;
@@ -999,6 +901,64 @@ namespace
 		CHECK(differ > 20);
 		CHECK(Overload::Shows(std::nanf(""), std::nanf(""), 3u));
 		CHECK(Near(Overload::LightWhen(true), 1.0f) && Overload::LightWhen(false) < 0.2f);
+
+		// the spells' own size follows the bar: normal empty, slow at first, double full and through Overdrive, 1 in burnout
+		CHECK(Near(Overload::Growth(Phase::kBuilding, 0.0f, 1.0f), 1.0f));
+		CHECK(Near(Overload::Growth(Phase::kBuilding, 0.5f, 1.0f), 1.5f));
+		CHECK(Near(Overload::Growth(Phase::kBuilding, 1.0f, 1.0f), 2.0f));
+		CHECK(Overload::Growth(Phase::kBuilding, 0.2f, 1.0f) < 1.2f);
+		for (float f = 0.0f; f < 1.0f; f += 0.05f) {
+			CHECK(Overload::Growth(Phase::kBuilding, f + 0.05f, 1.0f) >= Overload::Growth(Phase::kBuilding, f, 1.0f));
+		}
+		CHECK(Near(Overload::Growth(Phase::kOverdrive, 0.0f, 1.0f), 2.0f) && Near(Overload::Growth(Phase::kBurnout, 1.0f, 1.0f), 1.0f));
+		CHECK(Near(Overload::Growth(Phase::kOverdrive, 1.0f, 50.0f), 3.0f) && Near(Overload::Growth(Phase::kBuilding, 1.0f, 0.0f), 1.0f));
+		CHECK(Near(Overload::Growth(Phase::kBuilding, std::nanf(""), std::nanf("")), 1.0f));
+		// an explosion or hazard keeps its share of the growth it was made at, never smaller than the game made it
+		CHECK(Near(Overload::ImpactSize(2.0f, 0.75f), 1.75f) && Near(Overload::ImpactSize(2.0f, 9.0f), 2.0f));
+		CHECK(Near(Overload::ImpactSize(0.5f, 1.0f), 1.0f) && Near(Overload::ImpactSize(std::nanf(""), std::nanf("")), 1.0f));
+		// the red zone: nothing out of it, 0.35 at the red line, 1 at a full bar, scaled by the Wildness setting
+		CHECK(Near(Overload::RedDepth(false, 1.0f, 0.85f, 1.0f), 0.0f));
+		CHECK(Near(Overload::RedDepth(true, 0.85f, 0.85f, 1.0f), 0.35f) && Near(Overload::RedDepth(true, 1.0f, 0.85f, 1.0f), 1.0f));
+		CHECK(Near(Overload::RedDepth(true, 1.0f, 0.85f, 2.0f), 2.0f) && Near(Overload::RedDepth(true, 1.0f, 0.85f, 0.0f), 0.0f));
+		CHECK(Near(Overload::RedDepth(true, std::nanf(""), std::nanf(""), std::nanf("")), 0.0f));
+		// wild: calm with none; at its deepest it pulses, races, stalls and blinks out about one step in five, the hands apart
+		const auto still = Overload::WildAt(1.0f, 0.0f, 1u);
+		CHECK(Near(still.size, 1.0f) && Near(still.speed, 1.0f) && still.shows);
+		int out = 0, swells = 0, dips = 0, races = 0, stalls = 0, apart = 0;
+		for (int i = 0; i < 2400; ++i) {
+			const float t = static_cast<float>(i) / 12.0f;
+			const auto  w = Overload::WildAt(t, 2.0f, 7u);
+			CHECK(w.size >= 0.75f && w.size <= 1.61f && w.speed >= 0.15f && w.speed <= 3.41f);
+			out += w.shows ? 0 : 1;
+			swells += w.size > 1.05f ? 1 : 0;
+			dips += w.size < 0.98f ? 1 : 0;
+			races += w.speed > 1.2f ? 1 : 0;
+			stalls += w.speed < 0.8f ? 1 : 0;
+			apart += Overload::WildAt(t, 1.0f, 1u).size != Overload::WildAt(t, 1.0f, 2u).size ? 1 : 0;
+		}
+		CHECK(out > 300 && out < 660);
+		CHECK(swells > 400 && dips > 1100 && races > 800 && stalls > 700);
+		CHECK(apart > 2000);
+		const auto steady = Overload::WildAt(0.34f, 1.0f, 3u);  // one step holds for a twelfth of a second (0.333 to 0.417)
+		CHECK(Near(Overload::WildAt(0.41f, 1.0f, 3u).size, steady.size));
+		CHECK(Overload::WildAt(std::nanf(""), std::nanf(""), 3u).shows);
+		// the focus: drawn in to 0.6 at 0.2 s, swelled past it to 1.15 at 0.4 s, steady from 0.6 s
+		CHECK(Near(Overload::FocusPull(0.0f), 1.0f) && Near(Overload::FocusPull(0.2f), 0.6f) && Near(Overload::FocusPull(0.4f), 1.15f));
+		CHECK(Near(Overload::FocusPull(Overload::kFocusSeconds), 1.0f) && Near(Overload::FocusPull(5.0f), 1.0f) && Near(Overload::FocusPull(-1.0f), 1.0f));
+		CHECK(Overload::FocusPull(0.1f) < 1.0f && Overload::FocusPull(0.1f) > 0.6f && Overload::FocusPull(0.5f) > 1.0f);
+		CHECK(Near(Overload::FocusPull(std::nanf("")), 1.0f));
+		// a new speed keeps a controller's clock where it stood: frequency x time + phase is the same before and after,
+		// however long the controller has run (a held stream after minutes of play), through a run of red-zone steps
+		for (const float at : { 0.5f, 19.0f, 3600.0f }) {
+			float phase = 0.25f, freq = 1.0f;
+			for (const float next : { 2.2f, 0.15f, 1.6f, 1.0f }) {
+				const float before = freq * at + phase;
+				phase = Overload::RetimedPhase(phase, at, freq, next);
+				freq = next;
+				CHECK(std::abs(freq * at + phase - before) <= 1e-3f * std::max(1.0f, at));
+			}
+		}
+		CHECK(Near(Overload::RetimedPhase(0.5f, std::nanf(""), 1.0f, 2.0f), 0.5f));
 	}
 
 	// ------------------------------------------------------------------ the scorch and frost marks (Marks.h)
@@ -1137,7 +1097,6 @@ int main(int argc, char** argv)
 	SlowMagicka();
 	HandLights();
 	SettingsFile();
-	Classifier();
 	Overcharge();
 	ScorchMarks();
 	std::printf("%d passed, %d failed\n", gPassed, gFailed);

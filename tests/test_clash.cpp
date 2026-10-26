@@ -126,6 +126,158 @@ namespace
 		NEAR(t.point.y, u.point.y, 1e-2);
 	}
 
+	// two bolts flying at each other along lines 60 apart (one aimed hand to chest, the other the other way) miss with radii
+	// 22 + 22; with a head-on reach of 40 each they meet; the reach never counts for bolts crossing at a right angle, flying
+	// the same way, or one without reach
+	Look LookFrom(std::string_view a_words, Element a_element = Element::kArcane, std::vector<std::string_view> a_tags = {},
+		std::optional<Rgb> a_light = std::nullopt)
+	{
+		LookFacts f;
+		f.element = a_element;
+		f.keywords = a_tags;
+		f.words = a_words;
+		f.light = a_light;
+		return LookOf(f);
+	}
+
+	void TestLooks()
+	{
+		CHECK(LookName(Look::kFire) == "Fire");
+		CHECK(LookName(Look::kForce) == "Force");
+		CHECK(LookName(Look::kTotal) == "?");
+		// the game's tags come first, before any word
+		CHECK(LookFrom("Lightning Bolt", Element::kShock, { "MagicDamageFire" }) == Look::kFire);
+		CHECK(LookFrom("Frost Wave", Element::kArcane, { "NaturaDestructionWaterKW" }) == Look::kWater);
+		CHECK(LookFrom("x", Element::kArcane, { "MAG_MagicDamageSun" }) == Look::kSun);
+		CHECK(LookFrom("x", Element::kArcane, { "magicdamagefrost" }) == Look::kFrost);
+		// words, in the families' order: Shock before Fire, Physical first
+		CHECK(LookFrom("Firestorm Lightning") == Look::kShock);
+		CHECK(LookFrom("Bound Arrow meshes\\magic\\boundarrow.nif") == Look::kPhysical);
+		CHECK(LookFrom("Necromantic Bolt") == Look::kNecrotic);
+		CHECK(LookFrom("Blood Spray") == Look::kBlood);
+		CHECK(LookFrom("Vampiric Drain") == Look::kAbsorb);
+		CHECK(LookFrom("Sun Fire") == Look::kSun);
+		CHECK(LookFrom("Stars Fall") == Look::kAstral);
+		CHECK(LookFrom("Acid Spit") == Look::kPoison);
+		CHECK(LookFrom("Tidal Wave") == Look::kWater);
+		CHECK(LookFrom("Gale Force") == Look::kWind);
+		CHECK(LookFrom("Stone Fist") == Look::kEarth);
+		CHECK(LookFrom("Incinerate") == Look::kFire);
+		CHECK(LookFrom("Ice Storm meshes\\magic\\icestorm.nif") == Look::kFrost);
+		CHECK(LookFrom("Fire Storm") == Look::kFire);
+		CHECK(LookFrom("Storm Call") == Look::kShock);
+		CHECK(LookFrom("Icicle") == Look::kFrost);
+		CHECK(LookFrom("Telekinetic Missile") == Look::kArcane);
+		// word starts and whole words
+		CHECK(LookFrom("Mystic Sundial") == Look::kSun);
+		CHECK(LookFrom("Unsung Hero") == Look::kArcane);  // "sun" inside a word is not the sun
+		CHECK(LookFrom("Tsunami") == Look::kWater);
+		CHECK(LookFrom("Starlight") != Look::kAstral);
+		CHECK(LookFrom("a Light spell") == Look::kSun);
+		CHECK(LookFrom("Delight") == Look::kArcane);
+		CHECK(LookFrom("Bat Swarm") == Look::kBlood);
+		CHECK(LookFrom("Battle Cry") == Look::kArcane);
+		CHECK(LookFrom("Steal Life") == Look::kAbsorb);
+		CHECK(LookFrom("Stealth Strike") == Look::kArcane);
+		CHECK(LookFrom("Torrent") == Look::kWater);
+		CHECK(LookFrom("Torrential Rain") == Look::kArcane);
+		CHECK(LookFrom("Abyssal Tide") == Look::kWater);
+		CHECK(LookFrom("Abyss Gaze") == Look::kShadow);
+		// then the element, then resist magic, then the light's hue
+		CHECK(LookFrom("Plain Bolt", Element::kFrost) == Look::kFrost);
+		CHECK(LookFrom("Plain Bolt", Element::kPhysical) == Look::kPhysical);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 250, 18, 5 }) == Look::kFire);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 120, 5, 5 }) == Look::kBlood);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 60, 200, 60 }) == Look::kPoison);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 100, 210, 255 }) == Look::kFrost);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 240, 240, 240 }) == Look::kSun);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 20, 20, 25 }) == Look::kShadow);
+		CHECK(LookFrom("Plain Bolt", Element::kArcane, {}, Rgb{ 0, 0, 0 }) == Look::kArcane);
+		CHECK(LookFrom("Plain Bolt") == Look::kArcane);
+		// only the model's file name is searched: nearly every spell's model sits in the folder "Magic"
+		CHECK(FileOf("Magic\\PlainBolt.nif") == "PlainBolt.nif");
+		CHECK(FileOf("magic/sub/x.nif") == "x.nif");
+		CHECK(FileOf("x.nif") == "x.nif");
+		CHECK(FileOf("Magic\\").empty());
+		CHECK(LookFrom(std::string("Plain Bolt ") + std::string(FileOf("Magic\\PlainBolt.nif")), Element::kFrost) == Look::kFrost);
+		CHECK(LookFrom("Plain Bolt Magic\\PlainBolt.nif", Element::kFrost) == Look::kArcane);  // why the folder is cut off
+		LookFacts magic;
+		magic.words = "Plain Bolt";
+		magic.resistsMagic = true;
+		magic.light = Rgb{ 250, 18, 5 };
+		CHECK(LookOf(magic) == Look::kArcane);
+		// arrows and shouts before anything else, absorb before words
+		LookFacts arrow;
+		arrow.arrow = true;
+		arrow.words = "Fire Arrow";
+		CHECK(LookOf(arrow) == Look::kPhysical);
+		CHECK(LookFrom("Fire Breath", Element::kForce) == Look::kForce);
+		LookFacts absorb;
+		absorb.absorb = true;
+		absorb.words = "Lightning Leech";
+		CHECK(LookOf(absorb) == Look::kAbsorb);
+		// the special pairs, either way round
+		CHECK(PairOf(Look::kFire, Look::kFrost, false) == "Steam");
+		CHECK(PairOf(Look::kFrost, Look::kFire, false) == "Steam");
+		CHECK(PairOf(Look::kShock, Look::kFire, false) == "Plasma");
+		CHECK(PairOf(Look::kFrost, Look::kShock, false) == "ShatterStorm");
+		CHECK(PairOf(Look::kShadow, Look::kSun, false) == "Eclipse");
+		CHECK(PairOf(Look::kFire, Look::kFire, true) == "Resonance");
+		CHECK(PairOf(Look::kFire, Look::kFire, false).empty());
+		CHECK(PairOf(Look::kWater, Look::kEarth, false).empty());
+		// the tint contract with the mesh builder
+		CHECK(TintModeOf("Fireball", 1.0f, 1.0f, 1.0f) == TintMode::kColor);
+		CHECK(TintModeOf("EmbersHot", 0.4f, 0.4f, 0.4f) == TintMode::kHot);
+		CHECK(TintModeOf("mistpale", 1.0f, 1.0f, 1.0f) == TintMode::kPale);
+		CHECK(TintModeOf("Smoke", 0.42f, 0.4f, 0.38f) == TintMode::kKeep);
+		CHECK(TintModeOf("", 1.0f, 1.0f, 1.0f) == TintMode::kColor);
+		const auto color = Tinted(Rgb{ 200, 100, 50 }, TintMode::kColor);
+		NEAR(color[0], 1.0f, 1e-5f);
+		NEAR(color[1], 0.5f, 1e-5f);
+		NEAR(color[2], 0.25f, 1e-5f);
+		const auto hot = Tinted(Rgb{ 200, 100, 50 }, TintMode::kHot);
+		NEAR(hot[1], 0.5f * 0.45f + 0.55f, 1e-5f);
+		const auto pale = Tinted(Rgb{ 200, 100, 50 }, TintMode::kPale);
+		NEAR(pale[2], 0.25f * 0.3f + 0.7f, 1e-5f);
+		const auto none = Tinted(Rgb{ 0, 0, 0 }, TintMode::kColor);
+		CHECK(none[0] == 1.0f && none[1] == 1.0f && none[2] == 1.0f);
+	}
+
+	void TestHeadOn()
+	{
+		const float cos25 = std::cos(25.0f * kPi / 180.0f);
+		Touch       t;
+		Body        a = Sphere(1, { 0, -100, 0 }, { 0, 100, 0 }, 22), b = Sphere(2, { 0, 100, 60 }, { 0, -100, 60 }, 22);
+		CHECK(!FirstTouch(a, b, t, cos25));
+		a.reach = b.reach = 40.0f;
+		CHECK(HeadOn(a, b, cos25) && HeadOn(b, a, cos25));
+		CHECK(FirstTouch(a, b, t, cos25));
+		CHECK(t.t > 0.0f && t.t < 0.5f);
+		CHECK(!FirstTouch(a, b, t, 2.0f));  // the reach switched off
+		Body c = b;
+		c.reach = 0.0f;
+		CHECK(!HeadOn(a, c, cos25) && !FirstTouch(a, c, t, cos25));
+		Body side = Sphere(3, { -100, 0, 60 }, { 100, 0, 60 }, 22);
+		side.reach = 40.0f;
+		CHECK(!HeadOn(a, side, cos25) && !FirstTouch(a, side, t, cos25));
+		Body same = Sphere(4, { 0, -100, 60 }, { 0, 100, 60 }, 22);
+		same.reach = 40.0f;
+		CHECK(!HeadOn(a, same, cos25));
+		Body behind = Sphere(5, { 0, -300, 60 }, { 0, -500, 60 }, 22);  // flying away from it, behind it
+		behind.reach = 40.0f;
+		CHECK(!HeadOn(a, behind, cos25));
+		Body tilted = Sphere(6, { 0, 100, 60 }, { 60, -100, 60 }, 22);  // 16.7 degrees off straight back
+		tilted.reach = 40.0f;
+		CHECK(HeadOn(a, tilted, cos25) && !HeadOn(a, tilted, std::cos(10.0f * kPi / 180.0f)));
+		// the boxes FindContacts sweeps grow by the reach, so the pair is offered at all
+		std::vector<Contact> out;
+		const std::array     two{ a, b };
+		FindContacts(std::span<const Body>(two), [](std::size_t, std::size_t) { return true; }, 8, out, cos25);
+		CHECK(out.size() == 1);
+		FindContacts(std::span<const Body>(two), [](std::size_t, std::size_t) { return true; }, 8, out);
+		CHECK(out.empty());
+	}
+
 	void TestSphereBeam()
 	{
 		Touch      t;
@@ -648,6 +800,8 @@ namespace
 			c.minRadius = u(g) * 100;
 			c.maxRadius = 1 + u(g) * 1999;
 			c.barrierHeight = 10 + u(g) * 990;
+			c.headOnCatch = u(g) * 300;
+			c.headOnCone = u(g) * 60;
 			c.overpowerRatio = 1 + u(g) * 99;
 			c.weakenSurvivor = u(g) < 0.5f;
 			c.weakenDamage = u(g) < 0.5f;
@@ -733,7 +887,8 @@ namespace
 			CHECK(k.skillSource >= 0 && k.skillSource <= 2);
 			CHECK(back.enabled == c.enabled && back.who == c.who && back.ignoreAllies == c.ignoreAllies && back.maxDistance == c.maxDistance &&
 				  back.radiusScale == c.radiusScale && back.radiusBonus == c.radiusBonus && back.minRadius == c.minRadius &&
-				  back.maxRadius == c.maxRadius && back.barrierHeight == c.barrierHeight && back.overpowerRatio == c.overpowerRatio &&
+				  back.maxRadius == c.maxRadius && back.barrierHeight == c.barrierHeight && back.headOnCatch == c.headOnCatch &&
+				  back.headOnCone == c.headOnCone && back.overpowerRatio == c.overpowerRatio &&
 				  back.weakenSurvivor == c.weakenSurvivor && back.weakenDamage == c.weakenDamage &&
 				  back.tuning.streamShare == c.tuning.streamShare && back.tuning.arrowScale == c.tuning.arrowScale &&
 				  back.tuning.shoutStrength == c.tuning.shoutStrength && back.tuning.minSpellStrength == c.tuning.minSpellStrength &&
@@ -782,7 +937,7 @@ namespace
 			keys.insert(key);
 			++written;
 		}
-		CHECK(written == 83);  // 28 before the struggles, 46 of them, 9 of auto lock
+		CHECK(written == 85);  // 30 before the struggles (2 of them head on), 46 of them, 9 of auto lock
 		CHECK(keys.size() == written);
 		const Range push = RangeOf("PushTime"), scale = RangeOf("barscale"), source = RangeOf("SkillSource");
 		CHECK(push.lo == 1.0f && push.hi == 30.0f);
@@ -2432,6 +2587,8 @@ int main()
 	TestPathText();
 	TestVectors();
 	TestSphereSphere();
+	TestHeadOn();
+	TestLooks();
 	TestSphereBeam();
 	TestSphereBarrier();
 	TestBeamBeamAndOthers();

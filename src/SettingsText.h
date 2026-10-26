@@ -36,12 +36,18 @@ namespace Plugin
 		bool         lightGrowth{ true };
 		float        lightPerStage{ 0.15f };
 		bool         handGlow{ true };
-		bool         bar{ true };
-		float        barX{ 0.17f }, barY{ 0.95f }, barWidth{ 1.0f };
+		bool         bar{ true };                // the Overdrive bar as TrueHUD's special bar (TrueHud.cpp)
 		bool         spellGrowth{ true };        // the spells grow with the Overdrive bar (the art in hand, the projectiles)
-		float        growthMax{ 1.0f };          // how much bigger at the start of Overdrive: 1 = double
+		float        growthMax{ 1.0f };          // how much bigger with a full bar and through Overdrive: 1 = double
+		bool         impactsGrow{ true };        // the player's explosions, hazards and hit effects grow with them
+		float        impactGrowth{ 0.75f };      // ... by this share of the spells' growth when they are made
+		bool         redZoneWild{ true };        // Heat in the red outside Overdrive makes the spells act wild
+		float        wildness{ 1.0f };           // how wild, 1 = as designed
+		bool         overdriveFocus{ true };     // Overdrive draws the spells in, then holds them steady
+		bool         focusFlare{ true };         // ... and motes rush into each casting hand and flare there (Overload.cpp)
+		bool         redSparks{ true };          // in the red zone the hands spit sparks now and then
 		bool         burnoutFlicker{ true };     // the cooldown makes the spells sputter out
-		bool         arcHeat{ true };            // the bars offered to Reticle Arcs (Arcs.cpp)
+		bool         arcHeat{ false };           // both bars as Reticle Arcs arcs too (Arcs.cpp)
 		bool         marks{ true };              // Overheating fire / frost spells leave scorch / frost marks (Marks.cpp)
 		bool         markHurt{ true };           // ... and they hurt who stands in them
 		int          markMax{ 6 };               // marks alive at once
@@ -55,8 +61,10 @@ namespace Plugin
 		{
 			return enabled == a_o.enabled && tuning == a_o.tuning && boost == a_o.boost && overdriveKey == a_o.overdriveKey &&
 			       lightGrowth == a_o.lightGrowth && lightPerStage == a_o.lightPerStage && handGlow == a_o.handGlow && bar == a_o.bar &&
-			       barX == a_o.barX && barY == a_o.barY && barWidth == a_o.barWidth && spellGrowth == a_o.spellGrowth &&
-			       growthMax == a_o.growthMax && burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
+			       spellGrowth == a_o.spellGrowth &&
+			       growthMax == a_o.growthMax && impactsGrow == a_o.impactsGrow && impactGrowth == a_o.impactGrowth &&
+			       redZoneWild == a_o.redZoneWild && wildness == a_o.wildness && overdriveFocus == a_o.overdriveFocus &&
+			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
 			       markHurt == a_o.markHurt && markMax == a_o.markMax && markSeconds == a_o.markSeconds && markHurtPerSecond == a_o.markHurtPerSecond &&
 			       counts.healingAndWards == a_o.counts.healingAndWards && counts.stavesAndScrolls == a_o.counts.stavesAndScrolls && enemies == a_o.enemies &&
 			       debugLog == a_o.debugLog;
@@ -96,13 +104,15 @@ namespace Plugin
 			{ "LightGrowth", [](const Settings& s) { return On(s.lightGrowth); }, [](Settings& s, int v) { s.lightGrowth = v != 0; } },
 			{ "HandGlow", [](const Settings& s) { return On(s.handGlow); }, [](Settings& s, int v) { s.handGlow = v != 0; } },
 			{ "SpellGrowth", [](const Settings& s) { return On(s.spellGrowth); }, [](Settings& s, int v) { s.spellGrowth = v != 0; } },
+			{ "ImpactsGrow", [](const Settings& s) { return On(s.impactsGrow); }, [](Settings& s, int v) { s.impactsGrow = v != 0; } },
+			{ "RedZoneWild", [](const Settings& s) { return On(s.redZoneWild); }, [](Settings& s, int v) { s.redZoneWild = v != 0; } },
+			{ "OverdriveFocus", [](const Settings& s) { return On(s.overdriveFocus); }, [](Settings& s, int v) { s.overdriveFocus = v != 0; } },
+			{ "FocusFlare", [](const Settings& s) { return On(s.focusFlare); }, [](Settings& s, int v) { s.focusFlare = v != 0; } },
+			{ "RedSparks", [](const Settings& s) { return On(s.redSparks); }, [](Settings& s, int v) { s.redSparks = v != 0; } },
 			{ "BurnoutFlicker", [](const Settings& s) { return On(s.burnoutFlicker); }, [](Settings& s, int v) { s.burnoutFlicker = v != 0; } },
 			{ "Marks", [](const Settings& s) { return On(s.marks); }, [](Settings& s, int v) { s.marks = v != 0; } },
 			{ "MarkHurt", [](const Settings& s) { return On(s.markHurt); }, [](Settings& s, int v) { s.markHurt = v != 0; } },
 			{ "Bar", [](const Settings& s) { return On(s.bar); }, [](Settings& s, int v) { s.bar = v != 0; } },
-			{ "BarX", [](const Settings& s) { return ToPct(s.barX); }, [](Settings& s, int v) { s.barX = Pct(v, 0, 100); } },
-			{ "BarY", [](const Settings& s) { return ToPct(s.barY); }, [](Settings& s, int v) { s.barY = Pct(v, 0, 100); } },
-			{ "BarWidth", [](const Settings& s) { return ToPct(s.barWidth); }, [](Settings& s, int v) { s.barWidth = Pct(v, 50, 300); } },
 			{ "ArcHeat", [](const Settings& s) { return On(s.arcHeat); }, [](Settings& s, int v) { s.arcHeat = v != 0; } },
 			{ "HealingAndWards", [](const Settings& s) { return On(s.counts.healingAndWards); }, [](Settings& s, int v) { s.counts.healingAndWards = v != 0; } },
 			{ "StavesAndScrolls", [](const Settings& s) { return On(s.counts.stavesAndScrolls); }, [](Settings& s, int v) { s.counts.stavesAndScrolls = v != 0; } },
@@ -177,7 +187,11 @@ namespace Plugin
 				"with light growth on: how much brighter and wider the hand lights grow a stage, percent (0 to 100)" },
 
 			{ "GrowthMax", [](const Settings& s) { return ToPct(s.growthMax); }, [](Settings& s, int v) { s.growthMax = Pct(v, 0, 200); }, "Growth",
-				"with spells growing on: how much bigger they are at the start of Overdrive, percent (100 = double, 0 to 200)" },
+				"with spells growing on: how much bigger they are with a full Overdrive bar and through Overdrive, percent (100 = double, 0 to 200)" },
+			{ "ImpactGrowth", [](const Settings& s) { return ToPct(s.impactGrowth); }, [](Settings& s, int v) { s.impactGrowth = Pct(v, 0, 100); }, "Growth",
+				"with impacts growing on: the share of that growth your explosions, hazards and hit effects take when they are made, percent (0 to 100)" },
+			{ "Wildness", [](const Settings& s) { return ToPct(s.wildness); }, [](Settings& s, int v) { s.wildness = Pct(v, 0, 200); }, "Growth",
+				"with the red zone on: how wild your spells act while Heat is in the red outside Overdrive, percent (100 = as designed, 0 to 200)" },
 
 			{ "MarkMax", [](const Settings& s) { return s.markMax; }, [](Settings& s, int v) { s.markMax = std::clamp(v, 1, 20); }, "Marks",
 				"scorch and frost marks alive at once (1 to 20)" },
@@ -212,8 +226,8 @@ namespace Plugin
 
 		inline bool Apply(Settings& a_s, std::string_view a_key, int a_value) { return IniText::Apply(std::span<const Key>(kReadKeys), a_s, a_key, a_value); }
 
-		// keys of what is gone, skipped quietly: the bar's look (only the high-res bars are left)
-		inline constexpr std::string_view kRetired[]{ "BarStyle" };
+		// keys of what is gone, skipped quietly: our own drawn bars' look, place and size (the bars are TrueHUD's and Reticle Arcs')
+		inline constexpr std::string_view kRetired[]{ "BarStyle", "BarX", "BarY", "BarWidth" };
 
 		inline IniText::ReadResult Read(std::istream& a_in, Settings& a_s)
 		{

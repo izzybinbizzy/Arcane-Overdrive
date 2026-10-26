@@ -12,7 +12,7 @@
 //   every frame    held spells, the Overdrive key (a press, and holding it for the focus gate), the cooling, the drain and
 //                  the clocks (Heat::Meter::Tick), the slow magicka, a misfire's backlash, the hand lights (Hands.cpp), and
 //                  what the bars and the Debug page show.
-//   the bonus      Multiplier, asked by the effect hook in main.cpp as each effect lands on a target, on whatever thread
+//   the bonus      Multiplier, asked by the effect hook in main.cpp as each new effect takes its perks, on whatever thread
 //                  the game applies it: everything here is behind one lock.
 //
 // Slow magicka during the cooldown: part of each frame's natural regeneration is taken back (Heat::TakeBack). Nothing on
@@ -48,9 +48,7 @@ namespace Plugin
 		Track                                    gPlayer;
 		std::unordered_map<std::uint32_t, Track> gEnemies;  // by the actor's handle
 		std::vector<Cast>                        gCasts;
-		std::optional<SpellLook::Look>           gLastLook;              // the HUD look of the player's last spell that built heat
-		const RE::MagicItem*                     gLastSpell{ nullptr };  // and that spell (its own art feeds the spell bar)
-		float                                    gMisfire{ 0.0f };       // a misfire's flash left, seconds
+		float                                    gMisfire{ 0.0f };  // a misfire's flash left, seconds
 
 		std::atomic<bool>          gKey{ false };
 		std::atomic<bool>          gKeyHeld{ false };
@@ -61,6 +59,18 @@ namespace Plugin
 
 		std::mutex gViewLock;
 		MeterView  gView;
+
+		// each frame's charges for TrueHUD, which asks on its own thread for every bar it draws: read without the meters' lock
+		std::atomic<float>                       gPlayerCharge{ 0.0f };
+		std::mutex                               gChargeLock;
+		std::unordered_map<std::uint32_t, float> gEnemyCharges;  // by the actor's handle
+
+		void PublishCharges(float a_player, std::unordered_map<std::uint32_t, float>&& a_enemies)
+		{
+			gPlayerCharge = a_player;
+			std::lock_guard lock(gChargeLock);
+			gEnemyCharges = std::move(a_enemies);
+		}
 
 		bool Counts(const SpellInfo& a_info, const Settings& a_s) { return Heat::BuildsHeat(a_info.facts, a_s.counts); }
 
@@ -248,6 +258,8 @@ namespace Plugin
 			ReleaseHands();
 			ReleaseOverload();
 			ReleaseMarks();
+			UpdateTrueHud({}, s);  // switched off: TrueHUD's special bar is given back
+			PublishCharges(0.0f, {});
 			std::lock_guard lock(gViewLock);
 			gView = {};
 			return;
@@ -256,7 +268,7 @@ namespace Plugin
 		const auto  enemyTuning = EnemyTuning(t);
 		Heat::Stage stage = Heat::Stage::kCold;
 		MeterView   view;
-		bool        lookKnown = false, backlash = false;
+		bool        backlash = false;
 		{
 			std::lock_guard   lock(gLock);
 			std::vector<Cast> casts;
@@ -270,10 +282,6 @@ namespace Plugin
 				}
 				if (auto* track = TrackOf(actor, s, true)) {
 					track->meter.Cast(track == &gPlayer ? t : enemyTuning, info.school, CostOf(c.item, actor), info.element, c.dual);
-					if (track == &gPlayer) {
-						gLastLook = LookOf(c.item);
-						gLastSpell = c.item;
-					}
 					if (s.debugLog && track == &gPlayer) {
 						SKSE::log::info("cast {} ({}{}): charge {:.0f}, heat {:.0f}, {}", c.item->GetName(), Heat::SchoolName(info.school), c.dual ? ", dual" : "",
 							gPlayer.meter.Charge(t), gPlayer.meter.HeatNow(), Heat::StageName(gPlayer.meter.StageNow(t)));
@@ -305,10 +313,6 @@ namespace Plugin
 			}
 
 			Held(player, gPlayer, t, s, dt);
-			if (const auto* held = HeldSpell(player, s)) {
-				gLastLook = LookOf(held);
-				gLastSpell = held;
-			}
 			const bool focusing = (t.mode == Heat::OverdriveMode::kKey && gKeyHeld.load()) || HandsCharged(player);
 			gPlayer.meter.Focus(t, focusing, dt);
 			gPlayer.meter.Tick(t, dt);
@@ -352,30 +356,20 @@ namespace Plugin
 			view.bonus = m.Bonus(t);
 			view.regen = m.MagickaRegen(t);
 			view.enemies = gEnemies.size();
-			view.look = gLastLook.value_or(SpellLook::Look::kGeneric);
-			view.spell = gLastSpell;
-			lookKnown = gLastLook.has_value();
+			std::unordered_map<std::uint32_t, float> enemyCharges;
+			for (const auto& [key, track] : gEnemies) {
+				enemyCharges.emplace(key, track.meter.Charge(enemyTuning));
+			}
+			PublishCharges(view.charge, std::move(enemyCharges));
 		}
 		if (backlash) {
 			Backlash(player, t, s.debugLog);
 		}
-		if (!lookKnown) {  // nothing has built heat yet: the spell in hand (read outside the lock, as the tint below)
-			view.spell = EquippedSpell(player);
-			view.look = LookOf(view.spell);
-		}
 		view.boosted = gBoosted.load();
-		// the flames' tint: the element of the spell in the right hand, else the left (none: the heat's own colors)
-		for (const bool leftHand : { false, true }) {
-			const auto* item = player->GetEquippedObject(leftHand);
-			if (const auto* spell = item ? item->As<RE::MagicItem>() : nullptr; spell && Read(spell).element != 0) {
-				view.element = Read(spell).element;
-				break;
-			}
-		}
-		NoteSpellArt(view.spell);     // the spell's own textures and color for the spell bar (read once per spell)
 		UpdateOverload(view, s, dt);  // the spells grow with the charge, sputter in the cooldown and at a misfire - before the hand lights read it
 		UpdateHands(stage, stage, s);
 		UpdateMarks(view, s, dt);  // Overheating fire / frost spells leave scorch / frost marks that hurt
+		UpdateTrueHud(view, s);
 		std::lock_guard lock(gViewLock);
 		gView = view;
 	}
@@ -410,8 +404,6 @@ namespace Plugin
 		gPlayer = {};
 		gEnemies.clear();
 		gCasts.clear();
-		gLastLook.reset();
-		gLastSpell = nullptr;
 		gMisfire = 0.0f;
 		gKey = false;
 		gKeyHeld = false;
@@ -421,5 +413,18 @@ namespace Plugin
 	{
 		std::lock_guard lock(gViewLock);
 		return gView;
+	}
+
+	float ChargeOf(RE::Actor* a_actor)
+	{
+		if (!a_actor) {
+			return 0.0f;
+		}
+		if (a_actor->IsPlayerRef()) {
+			return gPlayerCharge.load();
+		}
+		std::lock_guard lock(gChargeLock);
+		const auto      it = gEnemyCharges.find(a_actor->GetHandle().native_handle());
+		return it != gEnemyCharges.end() ? it->second : 0.0f;
 	}
 }

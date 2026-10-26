@@ -316,7 +316,8 @@ namespace Crossfire::Core
 	{
 		constexpr float kHuge = 1.0e7f;  // well beyond any worldspace
 		const auto      sane = [](float v, float hi) { return std::isfinite(v) && v >= 0.0f && v <= hi; };
-		if (!Finite(a.from) || !Finite(a.to) || !sane(a.radius, 1.0e5f) || !sane(a.strength, std::numeric_limits<float>::max())) {
+		if (!Finite(a.from) || !Finite(a.to) || !sane(a.radius, 1.0e5f) || !sane(a.reach, 1.0e4f) ||
+			!sane(a.strength, std::numeric_limits<float>::max())) {
 			return false;
 		}
 		for (const Vec3 p : { a.from, a.to }) {
@@ -351,14 +352,34 @@ namespace Crossfire::Core
 				box.hi = { std::max(box.hi.x, e.x), std::max(box.hi.y, e.y), std::max(box.hi.z, e.z) };
 			}
 		}
-		const Vec3 r{ a.radius, a.radius, a.radius };
+		const float pad = a.radius + a.reach;
+		const Vec3  r{ pad, pad, pad };
 		return { box.lo - r, box.hi + r };
 	}
 
-	bool FirstTouch(const Body& a, const Body& b, Touch& a_out) noexcept
+	bool HeadOn(const Body& a, const Body& b, float a_cos) noexcept
+	{
+		if (a.shape != Shape::kSphere || b.shape != Shape::kSphere || !(a.reach > 0.0f) || !(b.reach > 0.0f) || !(a_cos <= 1.0f)) {
+			return false;
+		}
+		const Vec3  da = a.to - a.from, db = b.to - b.from;
+		const float la = Length(da), lb = Length(db);
+		if (!(la > 1e-3f) || !(lb > 1e-3f)) {
+			return false;
+		}
+		return Dot(da, db) / (la * lb) <= -a_cos && Dot(b.from - a.from, da) > 0.0f;
+	}
+
+	bool FirstTouch(const Body& a, const Body& b, Touch& a_out, float a_headOnCos) noexcept
 	{
 		using enum Shape;
 		if (a.shape == kSphere && b.shape == kSphere) {
+			if (HeadOn(a, b, a_headOnCos)) {
+				Body wa = a, wb = b;
+				wa.radius += a.reach;
+				wb.radius += b.reach;
+				return SphereSphere(wa, wb, a_out);
+			}
 			return SphereSphere(a, b, a_out);
 		}
 		if (a.shape == kSphere && b.shape == kBeam) {
@@ -646,6 +667,267 @@ namespace Crossfire::Core
 			}
 		}
 		return a_facts.voice && a_facts.cone ? Element::kForce : Element::kArcane;
+	}
+
+	// ------------------------------------------------------------------ looks
+	namespace
+	{
+		constexpr std::array<std::string_view, kLooks> kLookNames{ "Fire", "Frost", "Shock", "Poison", "Water", "Blood", "Sun", "Astral",
+			"Shadow", "Necrotic", "Wind", "Earth", "Arcane", "Absorb", "Physical", "Force" };
+
+		[[nodiscard]] bool WordChar(char c) noexcept
+		{
+			return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+		}
+
+		[[nodiscard]] bool StartsNoCase(std::string_view a_text, std::size_t a_at, std::string_view a_with) noexcept
+		{
+			return a_at + a_with.size() <= a_text.size() && SameText(a_text.substr(a_at, a_with.size()), a_with);
+		}
+
+		struct Word
+		{
+			std::string_view                text;
+			bool                            start{ false };  // begins a word
+			bool                            whole{ false };  // is a whole word
+			std::array<std::string_view, 2> notBefore{};     // never when one of these follows it
+		};
+
+		[[nodiscard]] bool Has(std::string_view a_text, const Word& a_word) noexcept
+		{
+			for (std::size_t i = 0; i + a_word.text.size() <= a_text.size(); ++i) {
+				if (!StartsNoCase(a_text, i, a_word.text) || ((a_word.start || a_word.whole) && i > 0 && WordChar(a_text[i - 1]))) {
+					continue;
+				}
+				const std::size_t end = i + a_word.text.size();
+				if (a_word.whole && end < a_text.size() && WordChar(a_text[end])) {
+					continue;
+				}
+				if (std::ranges::any_of(a_word.notBefore, [&](std::string_view n) { return !n.empty() && StartsNoCase(a_text, end, n); })) {
+					continue;
+				}
+				return true;
+			}
+			return false;
+		}
+
+		constexpr Word W(std::string_view a_text) noexcept { return { a_text }; }
+		constexpr Word Start(std::string_view a_text) noexcept { return { a_text, true }; }
+		constexpr Word Whole(std::string_view a_text) noexcept { return { a_text, false, true }; }
+		constexpr Word Not(std::string_view a_text, std::string_view a, std::string_view b = {}) noexcept { return { a_text, false, false, { a, b } }; }
+
+		struct Family
+		{
+			Look                  look;
+			std::span<const Word> words;
+		};
+
+		constexpr Word kPhysical[]{ W("arrow"), W("quiver"), W("bounddagger"), W("boundsword"), W("boundmace"), W("boundpike"), W("boundrapier"),
+			W("boundgs"), W("boundbigaxe"), W("boundwarhammer"), W("boundhalberd"), W("boundthrowing"), W("boundcrescent"), W("boundwpn"), W("spike"),
+			W("needle"), W("shuriken"), W("dragonsteeth"), W("dragons teeth"), W("dragon's teeth"), W("runeblade"), W("windblade"), W("wind blade") };
+		constexpr Word kAbsorb[]{ W("absorb"), W("drain"), W("leech"), W("siphon"), Not("steal", "th"), W("vampiricdrain"), W("vampiric drain"),
+			W("vampirictouch"), W("vampiric touch") };
+		constexpr Word kBlood[]{ W("blood"), W("vampir"), W("sanguin"), W("hemo"), W("hemalurg"), W("crimson"), Whole("bat"), Whole("bats") };
+		constexpr Word kShock[]{ W("shock"), W("lightn"), W("thunder"), W("spark"), W("volt"), W("electr"), W("arclight"), W("tonitrus"),
+			W("plasma"), W("static") };
+		constexpr Word kNecrotic[]{ W("necro"), W("death"), W("lich"), W("banshee"), W("wraith"), Start("bone"), W("grave"), W("desecrat"), W("geist"),
+			W("spectral"), W("ghost"), W("undead"), W("reanimat"), W("souldrain"), W("soul drain"), W("soulrend"), W("soul rend"), W("soultear"),
+			W("soul tear") };
+		constexpr Word kShadow[]{ W("shadow"), W("dark"), W("void"), Not("abyss", "altide", "al tide"), W("umbra"), W("gloom"), W("dusk"), W("twilight"),
+			W("eclipse"), W("night"), W("coldharbour"), W("oblivion") };
+		constexpr Word kSun[]{ Start("sun"), W("sunlight"), W("holy"), W("divine"), W("sacred"), W("radian"), W("inquisit"), W("dawn"), W("solar"),
+			W("lightspell"), Whole("light"), W("ascension"), W("meridia"), W("stendarr"), W("auriel") };
+		constexpr Word kAstral[]{ W("astral"), W("stellar"), Whole("star"), Whole("stars"), W("starfall"), W("luna"), W("moon"), W("celest"), W("cosmic"),
+			W("comet"), W("meteor") };
+		constexpr Word kPoison[]{ W("poison"), W("toxic"), W("acid"), W("venom"), W("corros"), W("noxious"), W("disease"), W("plague"), W("blight"),
+			Start("bile"), W("carrion"), W("virulent"), W("locust"), W("swarm"), Start("bug") };
+		constexpr Word kWater[]{ W("water"), W("aqua"), W("tidal"), Start("tide"), W("flood"), Not("torrent", "ial"), W("hydro"), W("ocean"), W("tsunami"),
+			W("abyssaltide"), W("abyssal tide") };
+		constexpr Word kWind[]{ W("wind"), Whole("air"), W("aero"), W("gale"), W("gust"), W("cyclone"), W("tornado"), W("twister") };
+		constexpr Word kEarth[]{ W("natura"), W("nature"), W("earth"), W("stone"), Start("rock"), W("root"), W("thorn"), Start("vine"), W("spore"),
+			W("hive"), W("leaf"), W("flora"), W("spriggan"), W("tentacle"), W("briar"), W("boulder") };
+		constexpr Word kFire[]{ W("fire"), W("flame"), W("burn"), W("inferno"), W("magma"), W("lava"), W("vulcan"), W("ember"), W("incendi"), W("incinera"),
+			W("immolat"), W("pyro"), W("blaze"), W("scorch"), W("molten") };
+		constexpr Word kFrost[]{ W("frost"), Start("ice"), W("icicle"), W("cold"), W("freez"), W("glaci"), W("snow"), W("winter"), W("blizzard"),
+			W("rime"), W("gelid"), W("arctic"), W("frigid"), W("hail"), W("chill"), W("cryo") };
+		constexpr Word kArcane[]{ W("arcane"), W("magic"), W("mana"), W("missile"), W("telekin"), W("rune"), W("mystic"), W("eldritch"), W("chaos"),
+			W("force"), W("warp"), Start("mage") };
+		constexpr Word kStorm[]{ W("storm") };
+
+		// the first family with a word in the text wins, in this order (Fire and Frost late: their words are the commonest;
+		// a storm is lightning only when nothing else names it - an ice storm is frost)
+		constexpr Family kFamilies[]{ { Look::kPhysical, kPhysical }, { Look::kAbsorb, kAbsorb }, { Look::kBlood, kBlood }, { Look::kShock, kShock },
+			{ Look::kNecrotic, kNecrotic }, { Look::kShadow, kShadow }, { Look::kSun, kSun }, { Look::kAstral, kAstral },
+			{ Look::kPoison, kPoison }, { Look::kWater, kWater }, { Look::kWind, kWind }, { Look::kEarth, kEarth }, { Look::kFire, kFire },
+			{ Look::kFrost, kFrost }, { Look::kShock, kStorm }, { Look::kArcane, kArcane } };
+
+		// the game's and the overhauls' own element tags: an exact name, or a part of one
+		constexpr std::pair<std::string_view, Look> kExactTags[]{ { "MagicDamageFire", Look::kFire }, { "MagicDamageFrost", Look::kFrost },
+			{ "MagicDamageShock", Look::kShock } };
+		constexpr std::pair<std::string_view, Look> kPartTags[]{ { "NaturaDestructionWater", Look::kWater },
+			{ "NaturaDestructionWind", Look::kWind }, { "NaturaDestructionStone", Look::kEarth }, { "MagicDamageSun", Look::kSun },
+			{ "MagicDamageShadow", Look::kShadow }, { "MagicDamagePoison", Look::kPoison }, { "MagicPoison", Look::kPoison } };
+
+		[[nodiscard]] std::optional<Look> HueLook(Rgb a_light) noexcept
+		{
+			const float r = a_light.r / 255.0f, g = a_light.g / 255.0f, b = a_light.b / 255.0f;
+			const float hi = (std::max)({ r, g, b }), lo = (std::min)({ r, g, b });
+			if (hi <= 0.0f) {
+				return std::nullopt;
+			}
+			const float l = (hi + lo) / 2.0f;
+			const float d = hi - lo;
+			const float s = d <= 0.0f ? 0.0f : (l <= 0.5f ? d / (hi + lo) : d / (2.0f - hi - lo));
+			if (s < 0.15f) {
+				return l > 0.7f ? Look::kSun : (l < 0.3f ? Look::kShadow : Look::kArcane);
+			}
+			float h = 0.0f;
+			if (hi == r) {
+				h = std::fmod((g - b) / d, 6.0f);
+			} else if (hi == g) {
+				h = (b - r) / d + 2.0f;
+			} else {
+				h = (r - g) / d + 4.0f;
+			}
+			h *= 60.0f;
+			if (h < 0.0f) {
+				h += 360.0f;
+			}
+			if (h < 15.0f || h >= 345.0f) {
+				return l < 0.45f ? Look::kBlood : Look::kFire;
+			}
+			if (h < 50.0f) {
+				return Look::kFire;
+			}
+			if (h < 70.0f) {
+				return Look::kSun;
+			}
+			if (h < 160.0f) {
+				return Look::kPoison;
+			}
+			if (h < 200.0f) {
+				return Look::kFrost;
+			}
+			if (h < 250.0f) {
+				return Look::kArcane;
+			}
+			if (h < 300.0f) {
+				return l > 0.5f ? Look::kShock : Look::kShadow;
+			}
+			return Look::kShadow;
+		}
+	}
+
+	std::string_view LookName(Look a_look) noexcept
+	{
+		const auto i = static_cast<std::size_t>(a_look);
+		return i < kLooks ? kLookNames[i] : std::string_view{ "?" };
+	}
+
+	Look LookOf(const LookFacts& a_facts) noexcept
+	{
+		if (a_facts.arrow) {
+			return Look::kPhysical;
+		}
+		if (a_facts.element == Element::kForce) {
+			return Look::kForce;
+		}
+		for (const auto have : a_facts.keywords) {
+			for (const auto& [name, look] : kExactTags) {
+				if (SameText(have, name)) {
+					return look;
+				}
+			}
+			for (const auto& [part, look] : kPartTags) {
+				if (Has(have, W(part))) {
+					return look;
+				}
+			}
+		}
+		if (a_facts.absorb) {
+			return Look::kAbsorb;
+		}
+		for (const auto& family : kFamilies) {
+			if (std::ranges::any_of(family.words, [&](const Word& w) { return Has(a_facts.words, w); })) {
+				return family.look;
+			}
+		}
+		switch (a_facts.element) {
+		case Element::kFire:
+			return Look::kFire;
+		case Element::kFrost:
+			return Look::kFrost;
+		case Element::kShock:
+			return Look::kShock;
+		case Element::kPoison:
+			return Look::kPoison;
+		case Element::kPhysical:
+			return Look::kPhysical;
+		default:
+			break;
+		}
+		if (a_facts.resistsMagic) {
+			return Look::kArcane;
+		}
+		if (a_facts.light) {
+			if (const auto hue = HueLook(*a_facts.light)) {
+				return *hue;
+			}
+		}
+		return Look::kArcane;
+	}
+
+	std::string_view FileOf(std::string_view a_path) noexcept
+	{
+		const auto cut = a_path.find_last_of("\\/");
+		return cut == std::string_view::npos ? a_path : a_path.substr(cut + 1);
+	}
+
+	std::string_view PairOf(Look a, Look b, bool a_sameSpell) noexcept
+	{
+		if (a_sameSpell) {
+			return "Resonance";
+		}
+		const auto is = [&](Look x, Look y) { return (a == x && b == y) || (a == y && b == x); };
+		if (is(Look::kFire, Look::kFrost)) {
+			return "Steam";
+		}
+		if (is(Look::kFire, Look::kShock)) {
+			return "Plasma";
+		}
+		if (is(Look::kFrost, Look::kShock)) {
+			return "ShatterStorm";
+		}
+		if (is(Look::kSun, Look::kShadow)) {
+			return "Eclipse";
+		}
+		return {};
+	}
+
+	TintMode TintModeOf(std::string_view a_block, float a_red, float a_green, float a_blue) noexcept
+	{
+		const auto ends = [&](std::string_view s) { return a_block.size() >= s.size() && SameText(a_block.substr(a_block.size() - s.size()), s); };
+		if (ends("Hot")) {
+			return TintMode::kHot;
+		}
+		if (ends("Pale")) {
+			return TintMode::kPale;
+		}
+		return a_red >= 0.99f && a_green >= 0.99f && a_blue >= 0.99f ? TintMode::kColor : TintMode::kKeep;
+	}
+
+	std::array<float, 3> Tinted(Rgb a_light, TintMode a_mode) noexcept
+	{
+		const float          top = static_cast<float>((std::max)({ a_light.r, a_light.g, a_light.b }));
+		std::array<float, 3> c{ 1.0f, 1.0f, 1.0f };
+		if (top > 0.0f) {
+			c = { a_light.r / top, a_light.g / top, a_light.b / top };
+		}
+		const float white = a_mode == TintMode::kHot ? 0.55f : (a_mode == TintMode::kPale ? 0.7f : 0.0f);
+		for (auto& v : c) {
+			v = v * (1.0f - white) + white;
+		}
+		return c;
 	}
 
 	// ------------------------------------------------------------------ limiter
@@ -1332,6 +1614,8 @@ namespace Crossfire::Core
 			CF_FLOAT("Hits", "MinRadius", minRadius, 0.0f, 100.0f, "no projectile is smaller than this"),
 			CF_FLOAT("Hits", "MaxRadius", maxRadius, 1.0f, 2000.0f, "no projectile is bigger than this (a cone keeps growing as it goes)"),
 			CF_FLOAT("Hits", "BarrierHeight", barrierHeight, 10.0f, 1000.0f, "how tall a wall spell stands, for catching projectiles"),
+			CF_FLOAT("Hits", "HeadOnCatch", headOnCatch, 0.0f, 300.0f, "percent: how much further two bolts flying head on at each other catch each other (100 = 40 units each, 0 = off), so a near miss still clashes"),
+			CF_FLOAT("Hits", "HeadOnCone", headOnCone, 0.0f, 60.0f, "degrees off straight at each other that still count as head on"),
 			CF_FLOAT("Clash", "OverpowerRatio", overpowerRatio, 1.0f, 100.0f, "a projectile this many times stronger than the other destroys it and flies on"),
 			CF_BOOL("Clash", "WeakenSurvivor", weakenSurvivor, "the one that flies on loses the strength it beat"),
 			CF_BOOL("Clash", "WeakenDamage", weakenDamage, "and does that much less when it lands"),

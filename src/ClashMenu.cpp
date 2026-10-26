@@ -51,8 +51,13 @@ namespace Crossfire
 				column(ImGuiMCP::GetContentRegionAvail().x * 0.5f)
 			{
 				ImGuiMCP::PushItemWidth(column * 0.9f);
+				ImGuiMCP::PushTextWrapPos(0.0f);  // long lines wrap at the panel's edge instead of running past it
 			}
-			~Layout() { ImGuiMCP::PopItemWidth(); }
+			~Layout()
+			{
+				ImGuiMCP::PopTextWrapPos();
+				ImGuiMCP::PopItemWidth();
+			}
 			Layout(const Layout&) = delete;
 			Layout& operator=(const Layout&) = delete;
 
@@ -130,6 +135,7 @@ namespace Crossfire
 			if (!BeginTable("reactions", kColumns, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
 				return;
 			}
+			PushTextWrapPos(-1.0f);  // one word a cell: never broken inside it (the page's own wrap would split "Annihilate")
 			TableSetupColumn(T("vs"));
 			for (std::size_t j = 0; j < Core::kElements; ++j) {
 				TableSetupColumn(TS(Core::ElementName(static_cast<Core::Element>(j))));
@@ -151,6 +157,7 @@ namespace Crossfire
 					TextColored(ActionColor(action), "%s", TS(Core::ActionName(action)));
 				}
 			}
+			PopTextWrapPos();
 			EndTable();
 		}
 
@@ -186,6 +193,15 @@ namespace Crossfire
 			Check(e, "Steer into oncoming spells", c.steer, "A bolt bends toward an enemy spell coming at it that would nearly miss, so the two meet.");
 			layout.Beside();
 			Check(e, "Arrows too", c.lockArrows, "Arrows lock and steer like bolts.");
+			{
+				int catchPct = static_cast<int>(std::lround(std::clamp(c.headOnCatch, 0.0f, 300.0f)));
+				if (ImGuiMCP::SliderInt(T("Head-on catch"), &catchPct, 0, 300, "%d%%")) {
+					c.headOnCatch = static_cast<float>(catchPct);
+					e.After(true);
+				}
+				ImGuiMCP::SetItemTooltip("%s", T("How far apart two bolts flying head on at each other still meet. 100% is the normal reach; "
+												 "lower, they must pass closer; higher, a wider miss still clashes. 0% turns it off."));
+			}
 
 			Heading(Icon::kFire, "Effects");
 			Check(e, "Bursts", c.explosions, "A destroyed projectile bursts where it was hit, with its own explosion.");

@@ -25,10 +25,10 @@ namespace Plugin
 		constexpr unsigned    kNeedsBuild = 10500;  // DevBench 1.5.0: RegisterToolExtension
 
 		constexpr const char* kInspect =
-			R"({"description":"Arcane Overdrive - the player's Overdrive bar (charge 0-100) and Heat bar (heat 0-100), stage, the gate (open, cold, hot, focus) with the sweet spot's edges, red zone, focus held, misfires, state (building, Overdrive, cooldown) and seconds left, ready, last school, spell power and magicka regeneration multipliers now, effects boosted, enemies with heat, hand lights being scaled (and held steady), the Overdrive key, the bars' look (the spell's, the one drawn, the shader's state, draw time), the cost (the main thread's work a frame, the HUD's, the bars' GPU time once set=gpu turned the clock on; microseconds), and the settings. Read only.","inputSchema":{"type":"object","properties":{}},"readOnly":true})";
+			R"({"description":"Arcane Overdrive - the player's Overdrive bar (charge 0-100) and Heat bar (heat 0-100), stage, the gate (open, cold, hot, focus) with the sweet spot's edges, red zone, focus held, misfires, state (building, Overdrive, cooldown) and seconds left, ready, last school, spell power and magicka regeneration multipliers now, effects boosted, enemies with heat, hand lights being scaled (and held steady), the Overdrive key, the cost (the main thread's work a frame, microseconds), the spells' overcharge (size, red-zone wildness, focus pull, explosions / hazards / hit effects grown), TrueHUD's special bar (missing, off, taken by another mod, ours), and the settings. Read only.","inputSchema":{"type":"object","properties":{}},"readOnly":true})";
 
 		constexpr const char* kMenu =
-			R"({"description":"Arcane Overdrive - set=charge value=0..100 sets the player's Overdrive bar; set=heat value=0..100 sets the Heat bar; set=stage value=0..4 forces Cold, Warm, Hot, Overheating (the heat) or Overdrive; set=overdrive starts Overdrive, gate or not; set=key presses the Overdrive key; set=hold value=0|1 holds it down or lets it go (the focus gate); set=preset value=0..2 picks Milk Drinker, Dragonborn or Aedra; set=reload reads the advanced file again; set=look value=-1..13 shows that HUD look whatever the spell (-1 the spell's own; 0 generic, 1 fire, 2 frost, 3 shock, 4-6 absorb health / magicka / stamina, 7 healing, 8 illusion, 9 conjuration, 10 bound, 11 alteration, 12 sun, 13 poison); set=gpu value=0|1 times the bars on the GPU (and starts every cost reading afresh); set=setting key=<key of either settings file> value=<whole number> sets any setting. Not saved from here.","inputSchema":{"type":"object","properties":{"set":{"type":"string"},"key":{"type":"string"},"value":{"type":"number"}}}})";
+			R"({"description":"Arcane Overdrive - set=charge value=0..100 sets the player's Overdrive bar; set=heat value=0..100 sets the Heat bar; set=stage value=0..4 forces Cold, Warm, Hot, Overheating (the heat) or Overdrive; set=overdrive starts Overdrive, gate or not; set=key presses the Overdrive key; set=hold value=0|1 holds it down or lets it go (the focus gate); set=preset value=0..2 picks Milk Drinker, Dragonborn or Aedra; set=reload reads the advanced file again; set=setting key=<key of either settings file> value=<whole number> sets any setting. Not saved from here.","inputSchema":{"type":"object","properties":{"set":{"type":"string"},"key":{"type":"string"},"value":{"type":"number"}}}})";
 
 		using json = nlohmann::json;
 
@@ -66,20 +66,16 @@ namespace Plugin
 			out["enemies"] = v.enemies;
 			out["handLights"] = { { "scaled", h.scaled }, { "heldSteady", h.frozen }, { "own", h.own }, { "left", h.factor[0] }, { "right", h.factor[1] } };
 			out["overdriveKey"] = SettingsText::KeyName(Config().overdriveKey);
-			const auto ls = LookStatsNow();
-			const auto art = SpellArtNow();
 			const auto ov = OverloadNow();
 			const auto mk = MarksNow();
 			out["marks"] = { { "alive", mk.alive }, { "made", mk.made }, { "hurt", mk.hurt } };
-			out["look"] = { { "spell", std::string(SpellLook::Name(v.look)) },
-				{ "drawn", ls.shown >= 0 ? std::string(SpellLook::Name(static_cast<SpellLook::Look>(ls.shown))) : std::string() },
-				{ "forced", ls.forced >= 0 ? std::string(SpellLook::Name(static_cast<SpellLook::Look>(ls.forced))) : std::string() },
-				{ "drawUsAvg", ls.drawUsAvg }, { "drawUsMax", ls.drawUsMax },
-				{ "shader", { { "state", ls.shaderState }, { "compileMs", ls.shaderMs }, { "calls", ls.shaderCalls } } } };
 			const auto fc = FrameCostNow();
-			out["cost"] = { { "mainUsAvg", fc.usAvg }, { "mainUsMax", fc.usMax }, { "hudUsAvg", ls.drawUsAvg }, { "hudUsMax", ls.drawUsMax }, { "gpuUs", ls.gpuUs } };
-			out["spellArt"] = { { "form", art.form }, { "colored", art.colored }, { "color", { art.r, art.g, art.b } } };
-			out["overcharge"] = { { "power", ov.power }, { "arts", ov.arts }, { "projectiles", ov.projectiles }, { "handsOut", ov.out } };
+			out["cost"] = { { "mainUsAvg", fc.usAvg }, { "mainUsMax", fc.usMax } };
+			static constexpr const char* kTrueHud[]{ "missing", "off", "taken", "ours" };
+			out["trueHud"] = kTrueHud[static_cast<int>(TrueHudNow())];
+			out["overcharge"] = { { "power", ov.power }, { "arts", ov.arts }, { "projectiles", ov.projectiles }, { "handsOut", ov.out }, { "wild", ov.wild },
+				{ "pull", ov.pull }, { "impacts", ov.impacts }, { "hits", ov.hits }, { "explosions", ov.explosions }, { "hazards", ov.hazards },
+				{ "flares", ov.flares }, { "sparks", ov.sparks }, { "effectModels", ov.effectModels } };
 			json       settings;
 			const auto s = Config();
 			for (const auto& k : SettingsText::kKeys) {
@@ -130,10 +126,6 @@ namespace Plugin
 				ApplyPreset(static_cast<std::size_t>(number));
 			} else if (set == "reload") {
 				ok = ReloadAdvanced();
-			} else if (set == "look" && haveNumber && number >= -1.0f && number < static_cast<float>(SpellLook::kLooks)) {
-				BenchForceLook(static_cast<int>(number));
-			} else if (set == "gpu" && haveNumber) {
-				BenchGpuClock(number != 0.0f);
 			} else if (set == "setting") {
 				int value = 0;
 				ok = SettingsText::ReadInt(text, value) && ApplySetting(Field(args, "key"), value);
@@ -142,7 +134,7 @@ namespace Plugin
 			}
 			if (a_write) {
 				a_write(a_sink, ok ? R"({"queued":true})" :
-									 R"j({"queued":false,"error":"set is charge or heat (value), stage (value 0-4), overdrive, key, hold (value 0 or 1), preset (value 0-2), reload, look (value -1 the spell's own, 0-13), gpu (value 0 or 1) or setting (key, value)"})j");
+									 R"j({"queued":false,"error":"set is charge or heat (value), stage (value 0-4), overdrive, key, hold (value 0 or 1), preset (value 0-2), reload or setting (key, value)"})j");
 			}
 		}
 
