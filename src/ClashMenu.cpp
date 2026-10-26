@@ -51,8 +51,13 @@ namespace Crossfire
 				column(ImGuiMCP::GetContentRegionAvail().x * 0.5f)
 			{
 				ImGuiMCP::PushItemWidth(column * 0.9f);
+				ImGuiMCP::PushTextWrapPos(0.0f);  // long lines wrap at the panel's edge instead of running past it
 			}
-			~Layout() { ImGuiMCP::PopItemWidth(); }
+			~Layout()
+			{
+				ImGuiMCP::PopTextWrapPos();
+				ImGuiMCP::PopItemWidth();
+			}
 			Layout(const Layout&) = delete;
 			Layout& operator=(const Layout&) = delete;
 

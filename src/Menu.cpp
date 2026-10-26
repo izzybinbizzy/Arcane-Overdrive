@@ -42,9 +42,11 @@ namespace Plugin
 				PushStyleColor(ImGuiCol_FrameBg, ImVec4{ 0.13f, 0.09f, 0.07f, 0.75f });
 				PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4{ 0.32f, 0.17f, 0.08f, 0.75f });
 				PushStyleColor(ImGuiCol_Separator, ImVec4{ 1.0f, 0.62f, 0.32f, 0.22f });
+				PushTextWrapPos(0.0f);  // long lines wrap at the panel's edge instead of running past it
 			}
 			~HeatStyle()
 			{
+				ImGuiMCP::PopTextWrapPos();
 				ImGuiMCP::PopStyleColor(3);
 			}
 			HeatStyle(const HeatStyle&) = delete;
@@ -333,8 +335,10 @@ namespace Plugin
 			{
 				const auto                   ov = OverloadNow();
 				static constexpr const char* kTrueHud[]{ "not installed", "switched off", "held by another mod", "the Overdrive bar" };
-				ImGuiMCP::Text("TrueHUD's special bar: %s   Reticle Arcs: %s", kTrueHud[static_cast<int>(TrueHudNow())], ArcBarTaken() ? "took the bars" : ArcsInstalled() ? "installed, refused the bars" :
-																																											 "not installed");
+				const char*                  arcs = !ArcBarTaken()   ? (ArcsInstalled() ? "installed, refused the bars" : "not installed") :
+				                                    Config().arcHeat ? "took the bars, shown" :
+				                                                       "took the bars, hidden (Bars in Reticle Arcs is off)";
+				ImGuiMCP::Text("TrueHUD's special bar: %s   Reticle Arcs: %s", kTrueHud[static_cast<int>(TrueHudNow())], arcs);
 				// in milliseconds, the unit a frame is measured in (a 60 fps frame is 16.7 ms)
 				const auto fc = FrameCostNow();
 				ImGuiMCP::TextDisabled("this mod a frame: %.3f ms (most %.3f)", fc.usAvg / 1000.0f, fc.usMax / 1000.0f);
