@@ -44,6 +44,8 @@ namespace Plugin
 		bool         redZoneWild{ true };        // Heat in the red outside Overdrive makes the spells act wild
 		float        wildness{ 1.0f };           // how wild, 1 = as designed
 		bool         overdriveFocus{ true };     // Overdrive draws the spells in, then holds them steady
+		bool         focusFlare{ true };         // ... and motes rush into each casting hand and flare there (Overload.cpp)
+		bool         redSparks{ true };          // in the red zone the hands spit sparks now and then
 		bool         burnoutFlicker{ true };     // the cooldown makes the spells sputter out
 		bool         arcHeat{ false };           // both bars as Reticle Arcs arcs too (Arcs.cpp)
 		bool         marks{ true };              // Overheating fire / frost spells leave scorch / frost marks (Marks.cpp)
@@ -62,7 +64,7 @@ namespace Plugin
 			       spellGrowth == a_o.spellGrowth &&
 			       growthMax == a_o.growthMax && impactsGrow == a_o.impactsGrow && impactGrowth == a_o.impactGrowth &&
 			       redZoneWild == a_o.redZoneWild && wildness == a_o.wildness && overdriveFocus == a_o.overdriveFocus &&
-			       burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
+			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
 			       markHurt == a_o.markHurt && markMax == a_o.markMax && markSeconds == a_o.markSeconds && markHurtPerSecond == a_o.markHurtPerSecond &&
 			       counts.healingAndWards == a_o.counts.healingAndWards && counts.stavesAndScrolls == a_o.counts.stavesAndScrolls && enemies == a_o.enemies &&
 			       debugLog == a_o.debugLog;
@@ -105,6 +107,8 @@ namespace Plugin
 			{ "ImpactsGrow", [](const Settings& s) { return On(s.impactsGrow); }, [](Settings& s, int v) { s.impactsGrow = v != 0; } },
 			{ "RedZoneWild", [](const Settings& s) { return On(s.redZoneWild); }, [](Settings& s, int v) { s.redZoneWild = v != 0; } },
 			{ "OverdriveFocus", [](const Settings& s) { return On(s.overdriveFocus); }, [](Settings& s, int v) { s.overdriveFocus = v != 0; } },
+			{ "FocusFlare", [](const Settings& s) { return On(s.focusFlare); }, [](Settings& s, int v) { s.focusFlare = v != 0; } },
+			{ "RedSparks", [](const Settings& s) { return On(s.redSparks); }, [](Settings& s, int v) { s.redSparks = v != 0; } },
 			{ "BurnoutFlicker", [](const Settings& s) { return On(s.burnoutFlicker); }, [](Settings& s, int v) { s.burnoutFlicker = v != 0; } },
 			{ "Marks", [](const Settings& s) { return On(s.marks); }, [](Settings& s, int v) { s.marks = v != 0; } },
 			{ "MarkHurt", [](const Settings& s) { return On(s.markHurt); }, [](Settings& s, int v) { s.markHurt = v != 0; } },

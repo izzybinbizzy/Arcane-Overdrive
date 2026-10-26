@@ -186,6 +186,15 @@ namespace Crossfire
 			Check(e, "Steer into oncoming spells", c.steer, "A bolt bends toward an enemy spell coming at it that would nearly miss, so the two meet.");
 			layout.Beside();
 			Check(e, "Arrows too", c.lockArrows, "Arrows lock and steer like bolts.");
+			{
+				int catchPct = static_cast<int>(std::lround(std::clamp(c.headOnCatch, 0.0f, 300.0f)));
+				if (ImGuiMCP::SliderInt(T("Head-on catch"), &catchPct, 0, 300, "%d%%")) {
+					c.headOnCatch = static_cast<float>(catchPct);
+					e.After(true);
+				}
+				ImGuiMCP::SetItemTooltip("%s", T("How far apart two bolts flying head on at each other still meet. 100% is the normal reach; "
+												 "lower, they must pass closer; higher, a wider miss still clashes. 0% turns it off."));
+			}
 
 			Heading(Icon::kFire, "Effects");
 			Check(e, "Bursts", c.explosions, "A destroyed projectile bursts where it was hit, with its own explosion.");

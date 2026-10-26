@@ -727,6 +727,8 @@ namespace
 		s.redZoneWild = false;
 		s.wildness = 1.5f;
 		s.overdriveFocus = false;
+		s.focusFlare = false;
+		s.redSparks = false;
 		// both files, each with only its own keys; read back together they give every setting
 		std::stringstream menu, advanced;
 		SettingsText::WriteMenu(menu, s);

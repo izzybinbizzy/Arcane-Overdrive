@@ -37,7 +37,7 @@ namespace Crossfire
 			return json{ { "tracked", s.tracked.load() }, { "clashes", s.clashes.load() }, { "destroyed", s.destroyed.load() },
 				{ "weakened", s.weakened.load() }, { "bursts", s.explosions.load() }, { "models", s.models.load() }, { "yours", s.yours.load() }, { "struggles", s.struggles.load() },
 				{ "overwhelms", s.overwhelms.load() }, { "won", s.won.load() }, { "lost", s.lost.load() }, { "gaveWay", s.gaveWay.load() },
-				{ "draws", s.draws.load() }, { "cut", s.cut.load() }, { "autoLocked", s.locked.load() }, { "steered", s.steered.load() }, { "locked", v.active }, { "foe", std::string(v.foe) }, { "balance", v.balance },
+				{ "draws", s.draws.load() }, { "cut", s.cut.load() }, { "autoLocked", s.locked.load() }, { "steered", s.steered.load() }, { "pairs", s.pairs.load() }, { "tinted", s.tinted.load() }, { "locked", v.active }, { "foe", std::string(v.foe) }, { "balance", v.balance },
 				{ "seconds", v.seconds }, { "mySkill", v.mySkill }, { "theirSkill", v.theirSkill } };
 		}
 

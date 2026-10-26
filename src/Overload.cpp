@@ -15,6 +15,10 @@
 //   - THE FOCUS: as Overdrive fires the spells draw in and swell back (Overload::FocusPull), then hold steady.
 //   - BURNOUT: through the cooldown, with Burnout flicker on, the spells sputter out and back (Overload::Shows) and the
 //     hand lights dip with them (HandLightFactor, read by Hands.cpp).
+//   - OUR OWN EFFECTS (meshes\ArcaneOverdrive\<Focus|Sparks><Fire|Frost|Shock|Arcane>.nif): as Overdrive fires, motes rush
+//     into each casting hand and flare there (Focus flare); in the red zone a hand spits a few sparks when its spell swells
+//     or blinks out (Sparks in the red). Each is played once where the hand is, as the game plays an impact - no form is
+//     made. The look is the hand's spell's element; a model that is not installed is never asked for.
 // Every value is written from a remembered base, as the hand lights are (Hands.cpp): a value someone else has written since
 // is taken as the new base, and a node or controller no longer ours is put back as it was found.
 
@@ -30,7 +34,22 @@ namespace Plugin
 		constexpr float         kWildEaseRate = 8.0f;
 		constexpr float         kWildOutLight = 0.35f;  // a hand light while the red zone blinks its spell out
 		constexpr std::size_t   kMostSpawned = 32;
-		constexpr std::uint32_t kWait3D = 120;  // frames an explosion or hazard may take to get its model
+		constexpr std::uint32_t kWait3D = 120;      // frames an explosion or hazard may take to get its model
+		constexpr float         kSparkGap = 0.3f;   // a hand spits sparks at most this often, seconds
+		constexpr float         kFlareLife = 1.0f;  // how long the game keeps each effect: past its last particle
+		constexpr float         kSparkLife = 0.8f;
+		constexpr std::uint32_t kSpawnFlags = 7;  // as the clash bursts are played (ClashPass.cpp ModelHere)
+
+		// our effect models: [effect][look], look = SpellInfo::element (0 every other element, 1 fire, 2 frost, 3 shock)
+		enum Effect : std::size_t
+		{
+			kFlare,
+			kSparks
+		};
+		constexpr std::array<const char*, 2>      kEffectNames{ "Focus", "Sparks" };
+		constexpr std::array<const char*, 4>      kLookNames{ "Arcane", "Fire", "Frost", "Shock" };
+		std::array<std::array<std::string, 4>, 2> gModels{};  // the model's name under meshes\, empty when it is not installed
+		bool                                      gModelsRead = false;
 
 		struct Grown
 		{
@@ -70,10 +89,52 @@ namespace Plugin
 		std::vector<RE::ObjectRefHandle> gNoted;    // from the hooks, any thread
 		std::vector<Spawned>             gSpawned;  // main thread
 
+		float                      gSparkAt[2]{ -10.0f, -10.0f };  // when each hand last spat sparks
+		std::uint32_t              gSparkTick[2]{ 0, 0 };          // the red zone's step each hand last looked at
 		std::atomic<float>         gPowerNow{ 1.0f }, gWildNow{ 0.0f }, gPullNow{ 1.0f };
 		std::atomic<float>         gLight[2]{ 1.0f, 1.0f };
 		std::atomic<std::size_t>   gArts{ 0 }, gProjectiles{ 0 }, gOut{ 0 }, gImpacts{ 0 }, gHits{ 0 };
-		std::atomic<std::uint32_t> gExplosions{ 0 }, gHazards{ 0 };
+		std::atomic<std::uint32_t> gExplosions{ 0 }, gHazards{ 0 }, gFlares{ 0 }, gSparks{ 0 }, gModelsFound{ 0 };
+
+		// once, on the main thread: which of our effect models are installed (loose or in an archive)
+		void FindModels()
+		{
+			gModelsRead = true;
+			std::uint32_t found = 0;
+			for (std::size_t e = 0; e < kEffectNames.size(); ++e) {
+				for (std::size_t l = 0; l < kLookNames.size(); ++l) {
+					const auto                   name = std::format("ArcaneOverdrive\\{}{}.nif", kEffectNames[e], kLookNames[l]);
+					RE::BSResourceNiBinaryStream stream("meshes\\" + name);
+					gModels[e][l] = stream.good() ? name : std::string();
+					found += stream.good() ? 1 : 0;
+				}
+			}
+			gModelsFound = found;
+			SKSE::log::info("effect models found: {} of {}", found, kEffectNames.size() * kLookNames.size());
+		}
+
+		// the look of a hand's spell: the one it is casting, else the one it holds
+		[[nodiscard]] std::size_t LookOf(RE::PlayerCharacter* a_player, std::size_t a_hand, const RE::MagicCaster* a_caster)
+		{
+			const RE::MagicItem* spell = a_caster ? a_caster->currentSpell : nullptr;
+			if (!spell && a_hand < 2) {
+				spell = a_player->GetActorRuntimeData().selectedSpells[a_hand];
+			}
+			const int e = spell ? Read(spell).element : 0;
+			return e >= 1 && e <= 3 ? static_cast<std::size_t>(e) : 0;
+		}
+
+		// one of our effects played once where a hand is, at a_scale, as the game plays an impact
+		bool PlayAt(RE::PlayerCharacter* a_player, const RE::NiAVObject* a_hand, Effect a_effect, std::size_t a_look, float a_scale, float a_life)
+		{
+			const auto& model = gModels[a_effect][a_look];
+			auto*       cell = a_player->GetParentCell();
+			const auto& at = a_hand->world.translate;
+			if (model.empty() || !cell || !std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z)) {
+				return false;
+			}
+			return RE::BSTempEffectParticle::Spawn(cell, a_life, model.c_str(), RE::NiPoint3{}, at, a_scale, kSpawnFlags, nullptr) != nullptr;
+		}
 
 		void Grow(RE::NiAVObject* a_node, float a_scale, bool a_shows)
 		{
@@ -303,8 +364,12 @@ namespace Plugin
 		if (std::abs(gPower - target) < 0.002f) {
 			gPower = target;  // settled: back to exactly 1 when the bar is empty, so nothing is touched any more
 		}
-		if (phase == Overload::Phase::kOverdrive && gPhase != Overload::Phase::kOverdrive) {
+		const bool fired = phase == Overload::Phase::kOverdrive && gPhase != Overload::Phase::kOverdrive;
+		if (fired) {
 			gFocusFrom = gTime;
+		}
+		if (!gModelsRead && (a_s.focusFlare || a_s.redSparks)) {
+			FindModels();
 		}
 		gPhase = phase;
 		const float pull = growing && a_s.overdriveFocus && phase == Overload::Phase::kOverdrive ? Overload::FocusPull(gTime - gFocusFrom) : 1.0f;
@@ -337,6 +402,19 @@ namespace Plugin
 					Grow(art, gPower * pull * wild.size, shows);
 					SpeedAll(art, ferocity * wild.speed);
 					++arts;
+				}
+				if (art && fired && a_s.focusFlare && PlayAt(player, art, kFlare, LookOf(player, hand, caster), std::sqrt(gPower), kFlareLife)) {
+					++gFlares;
+				}
+				// a spit of sparks when the red zone swells the hand's spell or blinks it out, once per step of it
+				const auto step = static_cast<std::uint32_t>(static_cast<std::int64_t>(std::floor(gTime * 12.0f)) & 0xFFFFFFFF);
+				if (art && a_s.redSparks && gWild > 0.0f && step != gSparkTick[hand]) {
+					gSparkTick[hand] = step;
+					if ((wild.size > 1.0f || !wild.shows) && gTime - gSparkAt[hand] >= kSparkGap &&
+						PlayAt(player, art, kSparks, LookOf(player, hand, caster), 1.0f, kSparkLife)) {
+						gSparkAt[hand] = gTime;
+						++gSparks;
+					}
 				}
 			}
 			if (active || !gNodes.empty()) {
@@ -403,6 +481,9 @@ namespace Plugin
 		gHits = 0;
 		gExplosions = 0;
 		gHazards = 0;
+		gFlares = 0;
+		gSparks = 0;
+		gSparkAt[0] = gSparkAt[1] = -10.0f;
 	}
 
 	float HandLightFactor(std::size_t a_hand) { return a_hand < 2 ? gLight[a_hand].load() : 1.0f; }
@@ -410,6 +491,6 @@ namespace Plugin
 	OverloadView OverloadNow()
 	{
 		return { gPowerNow.load(), gArts.load(), gProjectiles.load(), gOut.load(), gWildNow.load(), gPullNow.load(), gImpacts.load(), gHits.load(),
-			gExplosions.load(), gHazards.load() };
+			gExplosions.load(), gHazards.load(), gFlares.load(), gSparks.load(), gModelsFound.load() };
 	}
 }

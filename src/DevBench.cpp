@@ -74,7 +74,8 @@ namespace Plugin
 			static constexpr const char* kTrueHud[]{ "missing", "off", "taken", "ours" };
 			out["trueHud"] = kTrueHud[static_cast<int>(TrueHudNow())];
 			out["overcharge"] = { { "power", ov.power }, { "arts", ov.arts }, { "projectiles", ov.projectiles }, { "handsOut", ov.out }, { "wild", ov.wild },
-				{ "pull", ov.pull }, { "impacts", ov.impacts }, { "hits", ov.hits }, { "explosions", ov.explosions }, { "hazards", ov.hazards } };
+				{ "pull", ov.pull }, { "impacts", ov.impacts }, { "hits", ov.hits }, { "explosions", ov.explosions }, { "hazards", ov.hazards },
+				{ "flares", ov.flares }, { "sparks", ov.sparks }, { "effectModels", ov.effectModels } };
 			json       settings;
 			const auto s = Config();
 			for (const auto& k : SettingsText::kKeys) {

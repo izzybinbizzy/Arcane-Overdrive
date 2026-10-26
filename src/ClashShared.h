@@ -26,20 +26,22 @@ namespace Crossfire
 	// ------------------------------------------------------------------ Classify.cpp: what a projectile is to Crossfire
 	struct Info
 	{
-		bool                 eligible{ false };  // false: Crossfire never touches it
-		Core::Element        element{ Core::Element::kArcane };
-		Core::Kind           kind{ Core::Kind::kSpell };
-		Core::Shape          shape{ Core::Shape::kSphere };
-		bool                 immune{ false };
-		bool                 cone{ false };
-		Core::Stream         stream{ Core::Stream::kNone };    // what kind of stream it is, if one that can lock in a struggle
-		float                cost{ 0.0f };                     // the spell's base cost (a spray: per second; a shout's spray: ShoutStrength)
-		RE::ActorValue       skill{ RE::ActorValue::kNone };   // what the player's skill experience goes to
-		bool                 staff{ false };                   // cast from a staff: pays no magicka, counts as two hands in a struggle
-		bool                 absorb{ false };                  // an Absorb effect: a breakthrough also heals the winner
-		float                magnitude{ 0.0f };                // the costliest effect's magnitude
-		RE::ActorValue       resist{ RE::ActorValue::kNone };  // what resists it
-		const RE::MagicItem* spell{ nullptr };
+		bool                     eligible{ false };  // false: Crossfire never touches it
+		Core::Element            element{ Core::Element::kArcane };
+		Core::Kind               kind{ Core::Kind::kSpell };
+		Core::Shape              shape{ Core::Shape::kSphere };
+		bool                     immune{ false };
+		bool                     cone{ false };
+		Core::Stream             stream{ Core::Stream::kNone };    // what kind of stream it is, if one that can lock in a struggle
+		float                    cost{ 0.0f };                     // the spell's base cost (a spray: per second; a shout's spray: ShoutStrength)
+		RE::ActorValue           skill{ RE::ActorValue::kNone };   // what the player's skill experience goes to
+		bool                     staff{ false };                   // cast from a staff: pays no magicka, counts as two hands in a struggle
+		bool                     absorb{ false };                  // an Absorb effect: a breakthrough also heals the winner
+		float                    magnitude{ 0.0f };                // the costliest effect's magnitude
+		RE::ActorValue           resist{ RE::ActorValue::kNone };  // what resists it
+		const RE::MagicItem*     spell{ nullptr };
+		Core::Look               look{ Core::Look::kArcane };  // which clash design shows it
+		std::optional<Core::Rgb> light;                        // its light's color: the design is tinted with it
 	};
 	[[nodiscard]] const Info&       InfoOf(RE::Projectile* a_projectile, const RE::BGSProjectile* a_base);  // main thread
 	void                            ClearInfo();                                                            // main thread
@@ -50,8 +52,9 @@ namespace Crossfire
 	void                            FindStandInBursts();                    // once, at data load: a burst per element for spells with none
 	[[nodiscard]] RE::BGSExplosion* StandInBurst(Core::Element a_element);  // nullptr: none that only shows
 	[[nodiscard]] const char*       StandInModel(Core::Element a_element);  // the model of one that carries harm, or nullptr
-	void                            FindClashArt();                         // once, at data load: meshes\ArcaneOverdrive\Clash<Element>.nif that exist
-	[[nodiscard]] const char*       ClashArt(Core::Element a_element);      // that mesh (under meshes\), or nullptr
+	void                            FindClashArt();                         // once, at data load: meshes\ArcaneOverdrive\Clash<Look>.nif and ClashPair<Pair>.nif that exist
+	[[nodiscard]] const char*       ClashArt(Core::Look a_look);            // that mesh (under meshes\), or nullptr
+	[[nodiscard]] const char*       PairArt(std::string_view a_pair);       // a pair's mesh, or nullptr
 	[[nodiscard]] RE::SpellItem*    FearSpell();                            // null when none was found
 
 	// ------------------------------------------------------------------ Clash.cpp: the pass, once a frame
@@ -65,6 +68,7 @@ namespace Crossfire
 		// spell struggles: begun, broken through, won and lost by you, given way, drawn, and particles snuffed at a lock
 		std::atomic<std::uint64_t> struggles{ 0 }, overwhelms{ 0 }, won{ 0 }, lost{ 0 }, gaveWay{ 0 }, draws{ 0 }, cut{ 0 };
 		std::atomic<std::uint64_t> locked{ 0 }, steered{ 0 };  // auto lock: bolts turned at launch; bolts that steered
+		std::atomic<std::uint64_t> pairs{ 0 }, tinted{ 0 };    // a special pair's design shown; a design tinted with its spell's light
 	};
 	[[nodiscard]] Stats& Counters();
 

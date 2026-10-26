@@ -231,6 +231,13 @@ namespace Plugin
 				"While your Heat is in the red outside Overdrive, your spells pulse, stutter and blink out, and the hand lights and the "
 				"bar stutter with them. Releasing Overdrive steadies them.",
 				save);
+			ImGuiMCP::SameLine(column);
+			Toggle("Sparks in the red", s.redSparks,
+				"While your Heat is in the red outside Overdrive, your casting hands spit a few sparks, embers, ice shards or motes of "
+				"their spell's element now and then.",
+				save);
+			Toggle("Overdrive flare", s.focusFlare,
+				"As Overdrive fires, sparks of your spell's element rush into each casting hand and flare white-hot there.", save);
 			Toggle("Scorch and frost marks", s.marks,
 				"From Overheating on, your fire and frost spells leave a burning or frozen patch where they land for a few seconds.", save);
 			ImGuiMCP::SameLine(column);

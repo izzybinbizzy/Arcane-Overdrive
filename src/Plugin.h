@@ -104,6 +104,8 @@ namespace Plugin
 		float         pull{ 1.0f };                           // Overdrive's focus pull now
 		std::size_t   impacts{ 0 }, hits{ 0 };                // our explosions / hazards grown, and hit effects sped, this frame
 		std::uint32_t explosions{ 0 }, hazards{ 0 };          // ours grown since the game was loaded
+		std::uint32_t flares{ 0 }, sparks{ 0 };               // focus flares and red-zone sparks played since the game was loaded
+		std::uint32_t effectModels{ 0 };                      // of our 8 effect models, how many were found
 	};
 	[[nodiscard]] OverloadView OverloadNow();
 
