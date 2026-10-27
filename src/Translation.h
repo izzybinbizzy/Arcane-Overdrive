@@ -34,7 +34,7 @@ namespace Translation
 		// space and ' flags count too ("% d" takes an argument there); otherwise "100% is" stays plain text.
 		inline std::vector<std::string> Placeholders(std::string_view a_s, bool a_format = false)
 		{
-			const std::string_view   flags = a_format ? std::string_view("-+#0123456789.lhzjtL* '") : std::string_view("-+#0123456789.lhzjtL*");
+			const std::string_view   flags = a_format ? std::string_view("-+#0123456789.lhzjtLIw* '") : std::string_view("-+#0123456789.lhzjtLIw*");
 			std::vector<std::string> out;
 			for (std::size_t i = 0; i < a_s.size(); ++i) {
 				if (a_s[i] == '%') {
@@ -42,16 +42,18 @@ namespace Translation
 						++i;
 						continue;
 					}
-					// a conversion is flags/width/length then one conversion letter
+					// a conversion is flags/width/length then one conversion letter - MSVC's own %S, %C, %Z and its I, I32,
+					// I64 and w sizes included ("%I64u" is one conversion, not "%I" and text)
 					std::size_t j = i + 1;
 					while (j < a_s.size() && flags.find(a_s[j]) != std::string_view::npos) {
 						++j;
 					}
-					if (j < a_s.size() && std::string_view("diouxXeEfFgGaAcspn").find(a_s[j]) != std::string_view::npos) {
+					const bool known = j < a_s.size() && std::string_view("diouxXeEfFgGaAcspnSCZ").find(a_s[j]) != std::string_view::npos;
+					// printf reads ANY '%' as a conversion: one it does not know (a translated "50 % r") or a '%' at the very
+					// end counts too, so it never matches the English and never reaches printf
+					if (known || a_format) {
 						out.emplace_back(a_s.substr(i, j - i + 1));
 						i = j;
-					} else if (a_format) {
-						out.emplace_back("%?");  // not a conversion printf knows: the line must not be used
 					}
 				} else if (a_s[i] == '{') {
 					const auto j = a_s.find('}', i);
@@ -133,7 +135,7 @@ namespace Translation
 			}
 
 		private:
-			bool Fail(std::string& a_error, std::string a_what)
+			bool Fail(std::string& a_error, const std::string& a_what)
 			{
 				std::size_t line = 1;
 				for (std::size_t k = 0; k < i && k < s.size(); ++k) {
@@ -221,10 +223,17 @@ namespace Translation
 							if (!Hex4(cp)) {
 								return false;
 							}
-							if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
+							if (cp >= 0xDC00 && cp <= 0xDFFF) {
+								return false;  // a low surrogate with no high one before it
+							}
+							if (cp >= 0xD800 && cp <= 0xDBFF) {
+								// a high surrogate is only half a character: a low one must follow
+								if (i + 6 > s.size() || s[i] != '\\' || s[i + 1] != 'u') {
+									return false;
+								}
 								i += 2;
 								std::uint32_t lo = 0;
-								if (!Hex4(lo)) {
+								if (!Hex4(lo) || lo < 0xDC00 || lo > 0xDFFF) {
 									return false;
 								}
 								cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
@@ -251,7 +260,9 @@ namespace Translation
 		map.clear();
 		std::ifstream in(a_file, std::ios::binary);
 		if (!in) {
-			return "no translation file (" + a_file.filename().string() + "): the pages are in English";
+			// the name as UTF-8: path::string() throws for a name the ANSI code page cannot show
+			const auto name = a_file.filename().generic_u8string();
+			return "no translation file (" + std::string(name.begin(), name.end()) + "): the pages are in English";
 		}
 		std::stringstream ss;
 		ss << in.rdbuf();
@@ -271,9 +282,10 @@ namespace Translation
 				++same;
 				continue;
 			}
-			// an English line with a conversion is printed through printf: read both sides by printf's own rules
+			// an English line with a conversion or a "%%" is printed through printf: read both sides by printf's own rules
 			const auto lenient = Detail::Placeholders(en);
-			const bool format = std::ranges::any_of(lenient, [](const std::string& p) { return p.starts_with('%'); });
+			const bool format = en.find("%%") != std::string::npos ||
+			                    std::ranges::any_of(lenient, [](const std::string& p) { return p.starts_with('%'); });
 			if (Detail::Placeholders(en, format) != Detail::Placeholders(tr, format)) {
 				++bad;
 				if (badLines.size() < 400) {

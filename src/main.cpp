@@ -36,7 +36,8 @@
 //   DevBench.cpp    what DevBench can read and do
 //   Clash*          the clashes and spell struggles (Crossfire's code): ClashCore.* the game-free core - tests/test_clash.cpp;
 //                   ClashPass.cpp the pass once a frame; ClashStruggle.cpp locked streams; ClashClassify.cpp what a projectile
-//                   is; ClashAim.cpp auto lock; ClashSettings.cpp the files; ClashMenu.cpp its two pages; ClashDevBench.cpp
+//                   is; ClashAim.cpp auto lock; ClashLights.cpp the light a design casts; ClashSettings.cpp the files;
+//                   ClashMenu.cpp its two pages; ClashDevBench.cpp
 //   Plugin.h        what they share      PCH.h  what they all include
 //   MenuStyle.h     the menu look every plugin of ours shares (Dynamic Wards' copy is the master)
 //   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h, TrueHUDAPI.h, ReticleArcsAPI.h  other authors'

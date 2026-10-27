@@ -27,35 +27,49 @@
 
 namespace Plugin
 {
+	// The effects the Visuals presets cover: Full turns every one on; Performance turns off those whose bit is set in
+	// Settings::performanceOff, which the advanced file's [Performance] section sets, one line each. The last three are the
+	// clashes' (their own file); the rest are this file's switches.
+	struct Visual
+	{
+		const char* key;
+		bool        clash;
+	};
+	inline constexpr Visual        kVisuals[]{ { "SpellGrowth", false }, { "ImpactsGrow", false }, { "RedZoneWild", false }, { "OverdriveFocus", false },
+		{ "FocusFlare", false }, { "RedSparks", false }, { "BurnoutFlicker", false }, { "Marks", false }, { "HandGlow", false },
+		{ "LightGrowth", false }, { "ClashDesigns", true }, { "ClashLight", true }, { "ParticleLights", true } };
+	inline constexpr std::uint32_t kPerformanceDefault = (1u << 1) | (1u << 4) | (1u << 5) | (1u << 10) | (1u << 11) | (1u << 12);
+
 	struct Settings
 	{
-		bool         enabled{ true };
-		Heat::Tuning tuning{};
-		Heat::Boost  boost{ Heat::Boost::kDamage };
-		int          overdriveKey{ 34 };
-		bool         lightGrowth{ true };
-		float        lightPerStage{ 0.15f };
-		bool         handGlow{ true };
-		bool         bar{ true };                // the Overdrive bar as TrueHUD's special bar (TrueHud.cpp)
-		bool         spellGrowth{ true };        // the spells grow with the Overdrive bar (the art in hand, the projectiles)
-		float        growthMax{ 1.0f };          // how much bigger with a full bar and through Overdrive: 1 = double
-		bool         impactsGrow{ true };        // the player's explosions, hazards and hit effects grow with them
-		float        impactGrowth{ 0.75f };      // ... by this share of the spells' growth when they are made
-		bool         redZoneWild{ true };        // Heat in the red outside Overdrive makes the spells act wild
-		float        wildness{ 1.0f };           // how wild, 1 = as designed
-		bool         overdriveFocus{ true };     // Overdrive draws the spells in, then holds them steady
-		bool         focusFlare{ true };         // ... and motes rush into each casting hand and flare there (Overload.cpp)
-		bool         redSparks{ true };          // in the red zone the hands spit sparks now and then
-		bool         burnoutFlicker{ true };     // the cooldown makes the spells sputter out
-		bool         arcHeat{ false };           // both bars as Reticle Arcs arcs too (Arcs.cpp)
-		bool         marks{ true };              // Overheating fire / frost spells leave scorch / frost marks (Marks.cpp)
-		bool         markHurt{ true };           // ... and they hurt who stands in them
-		int          markMax{ 6 };               // marks alive at once
-		float        markSeconds{ 8.0f };        // how long a mark lasts
-		float        markHurtPerSecond{ 5.0f };  // health a second at Overheating, x1.5 in Overdrive
-		Heat::Counts counts{};
-		bool         enemies{ false };
-		bool         debugLog{ false };
+		bool          enabled{ true };
+		Heat::Tuning  tuning{};
+		Heat::Boost   boost{ Heat::Boost::kDamage };
+		int           overdriveKey{ 34 };
+		bool          lightGrowth{ true };
+		float         lightPerStage{ 0.15f };
+		bool          handGlow{ true };
+		bool          bar{ true };                // the Overdrive bar as TrueHUD's special bar (TrueHud.cpp)
+		bool          spellGrowth{ true };        // the spells grow with the Overdrive bar (the art in hand, the projectiles)
+		float         growthMax{ 1.0f };          // how much bigger with a full bar and through Overdrive: 1 = double
+		bool          impactsGrow{ true };        // the player's explosions, hazards and hit effects grow with them
+		float         impactGrowth{ 0.75f };      // ... by this share of the spells' growth when they are made
+		bool          redZoneWild{ true };        // Heat in the red outside Overdrive makes the spells act wild
+		float         wildness{ 1.0f };           // how wild, 1 = as designed
+		bool          overdriveFocus{ true };     // Overdrive draws the spells in, then holds them steady
+		bool          focusFlare{ true };         // ... and motes rush into each casting hand and flare there (Overload.cpp)
+		bool          redSparks{ true };          // in the red zone the hands spit sparks now and then
+		bool          burnoutFlicker{ true };     // the cooldown makes the spells sputter out
+		bool          arcHeat{ false };           // both bars as Reticle Arcs arcs too (Arcs.cpp)
+		bool          marks{ true };              // Overheating fire / frost spells leave scorch / frost marks (Marks.cpp)
+		bool          markHurt{ true };           // ... and they hurt who stands in them
+		int           markMax{ 6 };               // marks alive at once
+		float         markSeconds{ 8.0f };        // how long a mark lasts
+		float         markHurtPerSecond{ 5.0f };  // health a second at Overheating, x1.5 in Overdrive
+		Heat::Counts  counts{};
+		bool          enemies{ false };
+		bool          debugLog{ false };
+		std::uint32_t performanceOff{ kPerformanceDefault };  // a bit per kVisuals entry: the Performance preset turns it off
 
 		bool operator==(const Settings& a_o) const
 		{
@@ -67,7 +81,7 @@ namespace Plugin
 			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
 			       markHurt == a_o.markHurt && markMax == a_o.markMax && markSeconds == a_o.markSeconds && markHurtPerSecond == a_o.markHurtPerSecond &&
 			       counts.healingAndWards == a_o.counts.healingAndWards && counts.stavesAndScrolls == a_o.counts.stavesAndScrolls && enemies == a_o.enemies &&
-			       debugLog == a_o.debugLog;
+			       debugLog == a_o.debugLog && performanceOff == a_o.performanceOff;
 		}
 	};
 
@@ -118,6 +132,17 @@ namespace Plugin
 			{ "StavesAndScrolls", [](const Settings& s) { return On(s.counts.stavesAndScrolls); }, [](Settings& s, int v) { s.counts.stavesAndScrolls = v != 0; } },
 			{ "Enemies", [](const Settings& s) { return On(s.enemies); }, [](Settings& s, int v) { s.enemies = v != 0; } },
 		};
+
+		template <std::uint32_t B>
+		[[nodiscard]] int PerfGet(const Settings& a_s)
+		{
+			return On(((a_s.performanceOff >> B) & 1u) != 0);
+		}
+		template <std::uint32_t B>
+		void PerfSet(Settings& a_s, int a_v)
+		{
+			a_s.performanceOff = a_v != 0 ? (a_s.performanceOff | (1u << B)) : (a_s.performanceOff & ~(1u << B));
+		}
 
 		// the advanced file: every number, in sections, each explained
 		inline constexpr Key kAdvancedKeys[]{
@@ -200,6 +225,20 @@ namespace Plugin
 			{ "MarkHurtPerSecond", [](const Settings& s) { return Whole(s.markHurtPerSecond); }, [](Settings& s, int v) { s.markHurtPerSecond = Within(v, 0, 50); },
 				"Marks", "with marks hurting on: health a second to who stands in one, x1.5 in Overdrive (0 to 50)" },
 
+			{ "PerformanceSpellGrowth", PerfGet<0>, PerfSet<0>, "Performance", "1: the Performance preset turns the spells' growth with the bar off" },
+			{ "PerformanceImpactsGrow", PerfGet<1>, PerfSet<1>, "Performance", "1: ... the growth of your explosions, hazards and hit effects" },
+			{ "PerformanceRedZoneWild", PerfGet<2>, PerfSet<2>, "Performance", "1: ... your spells acting wild in the red zone" },
+			{ "PerformanceOverdriveFocus", PerfGet<3>, PerfSet<3>, "Performance", "1: ... Overdrive drawing your spells in" },
+			{ "PerformanceFocusFlare", PerfGet<4>, PerfSet<4>, "Performance", "1: ... the flare in your hands when Overdrive fires" },
+			{ "PerformanceRedSparks", PerfGet<5>, PerfSet<5>, "Performance", "1: ... the sparks your hands spit in the red zone" },
+			{ "PerformanceBurnoutFlicker", PerfGet<6>, PerfSet<6>, "Performance", "1: ... your spells sputtering in the burnout" },
+			{ "PerformanceMarks", PerfGet<7>, PerfSet<7>, "Performance", "1: ... the scorch and frost marks" },
+			{ "PerformanceHandGlow", PerfGet<8>, PerfSet<8>, "Performance", "1: ... the glow in your hands" },
+			{ "PerformanceLightGrowth", PerfGet<9>, PerfSet<9>, "Performance", "1: ... your hand lights growing with the Heat" },
+			{ "PerformanceClashDesigns", PerfGet<10>, PerfSet<10>, "Performance", "1: ... the clashes' own effects (the bursts stay)" },
+			{ "PerformanceClashLight", PerfGet<11>, PerfSet<11>, "Performance", "1: ... the light a clash casts" },
+			{ "PerformanceParticleLights", PerfGet<12>, PerfSet<12>, "Performance", "1: ... the particle lights of a clash's flying pieces" },
+
 			{ "DebugLog", [](const Settings& s) { return On(s.debugLog); }, [](Settings& s, int v) { s.debugLog = v != 0; }, "Debug",
 				"1: each cast, the bars after it and each release of Overdrive go into SpellMasteryHeat.log" },
 		};
@@ -250,8 +289,8 @@ namespace Plugin
 		// ------------------------------------------------------------------ the presets
 		struct Preset
 		{
-			const char*                                 name;
-			std::array<std::pair<const char*, int>, 16> values;
+			const char*                                 name{};
+			std::array<std::pair<const char*, int>, 16> values{};
 		};
 
 		// the same keys in all three, so picking one always lands on it; the damage bonuses are equal in all of them (the
@@ -279,6 +318,48 @@ namespace Plugin
 					Apply(a_s, key, value);
 				}
 			}
+		}
+
+		// the Visuals presets (kVisuals): Full, or Performance. This file's switches only - the clashes' three are set by the
+		// caller in their own file. a_clashOn: whether each of those three is on now (designs, light, particle lights)
+		[[nodiscard]] inline bool OffInPerformance(const Settings& a_s, std::size_t a_visual)
+		{
+			return ((a_s.performanceOff >> a_visual) & 1u) != 0;
+		}
+		inline void ApplyVisuals(Settings& a_s, bool a_performance)
+		{
+			for (std::size_t i = 0; i < std::size(kVisuals); ++i) {
+				if (!kVisuals[i].clash) {
+					Apply(a_s, kVisuals[i].key, a_performance && OffInPerformance(a_s, i) ? 0 : 1);
+				}
+			}
+		}
+		// what that preset sets the clashes' three to (designs, light, particle lights), for the caller to hand on
+		[[nodiscard]] inline std::array<bool, 3> ClashVisuals(const Settings& a_s, bool a_performance)
+		{
+			std::array<bool, 3> on{};
+			for (std::size_t i = 0; i < on.size(); ++i) {
+				on[i] = !(a_performance && OffInPerformance(a_s, std::size(kVisuals) - on.size() + i));
+			}
+			return on;
+		}
+		// 0 Full, 1 Performance; none: Custom
+		[[nodiscard]] inline std::optional<int> VisualsOf(const Settings& a_s, const std::array<bool, 3>& a_clashOn)
+		{
+			const auto on = [&](std::size_t i) {
+				if (kVisuals[i].clash) {
+					return a_clashOn[i - (std::size(kVisuals) - a_clashOn.size())];
+				}
+				const auto* k = IniText::Find(std::span<const Key>(kMenuKeys), kVisuals[i].key);
+				return k && k->get(a_s) != 0;
+			};
+			bool full = true, performance = true;
+			for (std::size_t i = 0; i < std::size(kVisuals); ++i) {
+				full = full && on(i);
+				performance = performance && on(i) != OffInPerformance(a_s, i);
+			}
+			return full ? std::optional(0) : performance ? std::optional(1) :
+			                                               std::nullopt;
 		}
 
 		// the preset every value matches; none: Custom

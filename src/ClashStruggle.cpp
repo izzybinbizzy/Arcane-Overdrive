@@ -231,10 +231,11 @@ namespace Crossfire
 			for (const auto i : it->second) {
 				const auto& s = gStreams[i];
 				bool        ok = false;
+				// a spray or breath sits at the hand, so the corridor alone held a lock for a caster who had turned away
 				if (s.info->stream == Core::Stream::kBeam) {
 					ok = Core::BeamAims(s.now, s.dir, a_to, s.radius);
 				} else {
-					ok = Core::InCorridor(Core::Project(s.now, a_from, a_to), D, s.radius);
+					ok = Core::InCorridor(Core::Project(s.now, a_from, a_to), D, s.radius) && Core::BeamAims(s.now, s.dir, a_to, s.radius);
 				}
 				if (!ok) {
 					continue;

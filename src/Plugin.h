@@ -18,7 +18,8 @@ namespace Plugin
 	[[nodiscard]] Settings Config();
 	void                   SetConfig(const Settings& a_settings);
 	bool                   ApplySetting(std::string_view a_key, int a_value);
-	void                   ApplyPreset(std::size_t a_preset);  // SettingsText::kPresets
+	void                   ApplyPreset(std::size_t a_preset);      // SettingsText::kPresets
+	void                   ApplyVisualPreset(bool a_performance);  // Full or Performance (kVisuals), the clashes' three too; not saved
 	void                   LoadSettings();
 	bool                   ReloadAdvanced();  // the advanced file read again (a hand edit while the game runs)
 	void                   SaveSettings();

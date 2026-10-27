@@ -812,6 +812,28 @@ namespace
 		SettingsText::ApplyPreset(aedra, 99);               // out of range: nothing changes
 		CHECK(!SettingsText::PresetOf(aedra).has_value());
 
+		// the Visual preset: Full turns every effect on; Performance turns off what [Performance] names (by default the costly ones)
+		CHECK(std::size(kVisuals) == 13 && !kVisuals[9].clash && kVisuals[10].clash && kVisuals[12].clash);
+		for (const auto& v : kVisuals) {
+			Settings probe;
+			CHECK(v.clash || SettingsText::Apply(probe, v.key, 0));  // every switch of this file is a real key
+		}
+		constexpr std::array<bool, 3> kAllOn{ true, true, true }, kAllOff{ false, false, false };
+		CHECK(SettingsText::VisualsOf(Settings{}, kAllOn) == std::optional<int>{ 0 });  // the defaults are Full
+		Settings vis;
+		SettingsText::ApplyVisuals(vis, true);
+		CHECK(!vis.impactsGrow && !vis.focusFlare && !vis.redSparks && vis.spellGrowth && vis.marks && vis.handGlow && vis.lightGrowth);
+		CHECK(SettingsText::ClashVisuals(vis, true) == kAllOff);
+		CHECK(SettingsText::VisualsOf(vis, kAllOff) == std::optional<int>{ 1 });
+		CHECK(!SettingsText::VisualsOf(vis, std::array<bool, 3>{ true, false, false }).has_value());  // one turned back on: Custom
+		SettingsText::ApplyVisuals(vis, false);
+		CHECK(SettingsText::ClashVisuals(vis, false) == kAllOn && SettingsText::VisualsOf(vis, kAllOn) == std::optional<int>{ 0 });
+		CHECK(SettingsText::Apply(vis, "PerformanceClashLight", 0) && SettingsText::Apply(vis, "PerformanceMarks", 1));  // his own pick
+		SettingsText::ApplyVisuals(vis, true);
+		CHECK(!vis.marks && !vis.focusFlare && vis.handGlow);
+		const std::array<bool, 3> lightKept{ false, true, false };
+		CHECK(SettingsText::ClashVisuals(vis, true) == lightKept && SettingsText::VisualsOf(vis, lightKept) == std::optional<int>{ 1 });
+
 		CHECK(SettingsText::KeyName(34) == "G");
 		CHECK(SettingsText::KeyName(2) == "1");
 		CHECK(SettingsText::KeyName(11) == "0");

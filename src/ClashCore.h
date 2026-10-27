@@ -306,6 +306,8 @@ namespace Crossfire::Core
 	{
 		std::uint8_t r{ 0 }, g{ 0 }, b{ 0 };
 	};
+	// a design's own color: its tint and its light's for a spell with no light of its own (an arrow, a plain bolt)
+	[[nodiscard]] Rgb LookTint(Look a_look) noexcept;
 
 	struct LookFacts
 	{
@@ -684,6 +686,9 @@ namespace Crossfire::Core
 		bool  safeExplosionsOnly{ true };  // skip an explosion that would do anything but show (damage, enchantment, spawns)
 		bool  standInBursts{ true };       // a spell with no burst of its own (Firebolt) bursts as its element's spells do
 		float burstScale{ 1.5f };          // how big a clash's burst is
+		bool  designs{ true };             // a clash's own designed effect, on top of its burst
+		float clashLight{ 100.0f };        // percent: the real light a clash's design casts (0 = none)
+		bool  particleLights{ true };      // the designs' light carriers, which ENB and Community Shaders turn into particle lights
 		int   maxExplosionsPerFrame{ 4 };
 		float explosionCooldown{ 0.12f };
 		int   maxContactsPerFrame{ 32 };

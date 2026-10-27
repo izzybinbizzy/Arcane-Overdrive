@@ -221,6 +221,21 @@ namespace Crossfire
 		return gMenu;
 	}
 
+	std::array<bool, 3> VisualsNow()
+	{
+		const auto c = MenuCopy();
+		return { c.designs, c.clashLight > 0.0f, c.particleLights };
+	}
+
+	void SetVisuals(const std::array<bool, 3>& a_on, bool a_save)
+	{
+		auto c = MenuCopy();
+		c.designs = a_on[0];
+		c.clashLight = a_on[1] ? (c.clashLight > 0.0f ? c.clashLight : 100.0f) : 0.0f;
+		c.particleLights = a_on[2];
+		Submit(c, a_save);
+	}
+
 	std::vector<std::string> LoadNotes()
 	{
 		std::scoped_lock lock(gMenuLock);

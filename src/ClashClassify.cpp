@@ -374,6 +374,14 @@ namespace Crossfire
 				gPairArt.emplace(std::string(pair), std::move(art));
 			}
 		}
+		// the same spell meeting itself may have a design of its own look (lightning's Resonance has no rings)
+		for (std::size_t l = 0; l < Core::kLooks; ++l) {
+			const auto key = std::format("Resonance{}", Core::LookName(static_cast<Core::Look>(l)));
+			if (auto art = ArtIfThere("ClashPair" + key); !art.empty()) {
+				SKSE::log::info("pair art for {}: meshes\\{}", key, art);
+				gPairArt.emplace(key, std::move(art));
+			}
+		}
 	}
 
 	const char* ClashArt(Core::Look a_look)

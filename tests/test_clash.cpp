@@ -145,6 +145,14 @@ namespace
 		CHECK(LookName(Look::kFire) == "Fire");
 		CHECK(LookName(Look::kForce) == "Force");
 		CHECK(LookName(Look::kTotal) == "?");
+		// every design has a color of its own, bright enough to light (a spell with no light takes it)
+		for (std::size_t l = 0; l < kLooks; ++l) {
+			const auto t = LookTint(static_cast<Look>(l));
+			CHECK((std::max)({ t.r, t.g, t.b }) >= 100);
+		}
+		CHECK(LookTint(Look::kFire).r == 251 && LookTint(Look::kFire).b == 96);
+		CHECK(LookTint(Look::kPhysical).r == 220 && LookTint(Look::kForce).b == 210);
+		CHECK(LookTint(Look::kTotal).g == 255);
 		// the game's tags come first, before any word
 		CHECK(LookFrom("Lightning Bolt", Element::kShock, { "MagicDamageFire" }) == Look::kFire);
 		CHECK(LookFrom("Frost Wave", Element::kArcane, { "NaturaDestructionWaterKW" }) == Look::kWater);
@@ -937,7 +945,7 @@ namespace
 			keys.insert(key);
 			++written;
 		}
-		CHECK(written == 85);  // 30 before the struggles (2 of them head on), 46 of them, 9 of auto lock
+		CHECK(written == 88);  // 33 before the struggles (2 of them head on, 3 the designs' light), 46 of them, 9 of auto lock
 		CHECK(keys.size() == written);
 		const Range push = RangeOf("PushTime"), scale = RangeOf("barscale"), source = RangeOf("SkillSource");
 		CHECK(push.lo == 1.0f && push.hi == 30.0f);

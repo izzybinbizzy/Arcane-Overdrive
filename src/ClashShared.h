@@ -15,13 +15,16 @@ namespace Crossfire
 	// Read in this order, each on top of the last: SpellMasteryHeat Clash Rules.ini (shipped: elements, reactions,
 	// exclusions), every SpellMasteryHeat Clash\*.ini (patches, alphabetical), SpellMasteryHeat Clashes.ini (the menu's). Live() is the game's main thread's own copy;
 	// the menu works on a copy of its own (MenuCopy/Submit), handed over as a task on the main thread.
-	void                                   LoadSettings();                                     // main thread: at data load, and "Reload" in the menu
-	[[nodiscard]] const Core::Config&      Live();                                             // main thread only
-	[[nodiscard]] Core::Config             MenuCopy();                                         // any thread
-	void                                   Submit(const Core::Config& a_config, bool a_save);  // any thread; the rules are kept
-	void                                   ReloadSoon();                                       // any thread
-	[[nodiscard]] std::vector<std::string> LoadNotes();                                        // any thread: what the last load said (warnings, files read)
-	[[nodiscard]] bool                     Excluded(const RE::TESForm* a_form);                // main thread
+	void                              LoadSettings();                                     // main thread: at data load, and "Reload" in the menu
+	[[nodiscard]] const Core::Config& Live();                                             // main thread only
+	[[nodiscard]] Core::Config        MenuCopy();                                         // any thread
+	void                              Submit(const Core::Config& a_config, bool a_save);  // any thread; the rules are kept
+	// the three clash effects the Visuals presets cover (SettingsText kVisuals): designs, the clash light, particle lights
+	[[nodiscard]] std::array<bool, 3>      VisualsNow();                                              // any thread
+	void                                   SetVisuals(const std::array<bool, 3>& a_on, bool a_save);  // any thread
+	void                                   ReloadSoon();                                              // any thread
+	[[nodiscard]] std::vector<std::string> LoadNotes();                                               // any thread: what the last load said (warnings, files read)
+	[[nodiscard]] bool                     Excluded(const RE::TESForm* a_form);                       // main thread
 
 	// ------------------------------------------------------------------ Classify.cpp: what a projectile is to Crossfire
 	struct Info
@@ -96,6 +99,14 @@ namespace Crossfire
 	};
 	void Snuff(std::size_t a_entry);                                                                         // kill it quietly: no burst, no event, no experience
 	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config);  // its own explosion
+	// ------------------------------------------------------------------ ClashLights.cpp: the light a design casts (main thread)
+	void                      LightDesign(RE::NiAVObject* a_root, Core::Rgb a_color, float a_scale, float a_percent);  // hung on the design's mesh
+	void                      UpdateLights(float a_delta);                                                             // each light flared and faded along its design, let go when done or gone
+	void                      ClearLights();                                                                           // a load, or the clashes reset: every light let go
+	[[nodiscard]] std::size_t LightsLit();
+	// DevBench's look at a design: a look's (or a pair's) design played a_ahead in front of the player and a_up above her
+	// feet, turned to her heading and tinted as a clash would; queued for the main thread. False: no such look
+	bool ShowDesign(std::string_view a_look, std::string_view a_pair, std::optional<Core::Rgb> a_color, float a_ahead, float a_up);
 
 	// ------------------------------------------------------------------ Struggle.cpp: streams that lock (main thread)
 	namespace Struggles

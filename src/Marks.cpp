@@ -135,10 +135,10 @@ namespace Plugin
 			gSeen = std::move(now);
 		}
 
-		// an actor a mark may hurt: not the player, not on the player's side, not the player's summon, alive
+		// an actor a mark may hurt: an enemy of the player's (the page's word), alive - never a guard, a bystander or her horse
 		bool Hurtable(RE::Actor* a_actor, RE::PlayerCharacter* a_player)
 		{
-			if (!a_actor || a_actor == a_player || a_actor->IsDead() || a_actor->IsPlayerTeammate()) {
+			if (!a_actor || a_actor == a_player || a_actor->IsDead() || a_actor->IsPlayerTeammate() || !a_actor->IsHostileToActor(a_player)) {
 				return false;
 			}
 			if (a_actor->IsCommandedActor()) {
@@ -176,7 +176,8 @@ namespace Plugin
 					auto*       av = a->AsActorValueOwner();
 					const float hurt = Marks::Hurt(a_s.markHurtPerSecond, a_r.tick, a_overdrive, av->GetActorValue(resistAv));
 					if (hurt > 0.0f) {
-						av->DamageActorValue(RE::ActorValue::kHealth, hurt);
+						// the player as the attacker: the kill and the hit are hers; the tuned numbers kept (no difficulty scaling)
+						a->DoDamage(hurt, a_player, true);
 						++gHurt;
 					}
 				}

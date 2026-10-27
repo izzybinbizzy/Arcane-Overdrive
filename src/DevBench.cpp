@@ -7,10 +7,12 @@
 // bonus and magicka regeneration now, the hand lights being scaled, the key, the preset and the settings - and `menu
 // action=invoke name=spellmasteryheat` sets the Overdrive bar (set=charge value=0..100) or the Heat bar (set=heat), forces a
 // stage (set=stage value=0 Cold .. 3 Overheating, 4 Overdrive), starts Overdrive (set=overdrive), presses or holds the
-// Overdrive key (set=key, set=hold value=0|1), picks a preset (set=preset value=0..2), reads the advanced file again
-// (set=reload), or sets any setting (set=setting key=<ini key> value=<n>). DevBench never saves; a later change made in
-// the menu saves the settings as they are then. Nothing here runs unless DevBench asks.
+// Overdrive key (set=key, set=hold value=0|1), picks a preset (set=preset value=0..2) or a visual preset (set=visuals value=0
+// Full, 1 Performance), reads the advanced file again (set=reload), or sets any setting (set=setting key=<ini key> value=<n>).
+// DevBench never saves; a later change made in the menu saves the settings as they are then. Nothing here runs unless DevBench
+// asks.
 
+#include "ClashShared.h"
 #include "Plugin.h"
 
 #include "DevBenchAPI.h"
@@ -25,10 +27,10 @@ namespace Plugin
 		constexpr unsigned    kNeedsBuild = 10500;  // DevBench 1.5.0: RegisterToolExtension
 
 		constexpr const char* kInspect =
-			R"({"description":"Arcane Overdrive - the player's Overdrive bar (charge 0-100) and Heat bar (heat 0-100), stage, the gate (open, cold, hot, focus) with the sweet spot's edges, red zone, focus held, misfires, state (building, Overdrive, cooldown) and seconds left, ready, last school, spell power and magicka regeneration multipliers now, effects boosted, enemies with heat, hand lights being scaled (and held steady), the Overdrive key, the cost (the main thread's work a frame, microseconds), the spells' overcharge (size, red-zone wildness, focus pull, explosions / hazards / hit effects grown), TrueHUD's special bar (missing, off, taken by another mod, ours), and the settings. Read only.","inputSchema":{"type":"object","properties":{}},"readOnly":true})";
+			R"({"description":"Arcane Overdrive - the player's Overdrive bar (charge 0-100) and Heat bar (heat 0-100), stage, the gate (open, cold, hot, focus) with the sweet spot's edges, red zone, focus held, misfires, state (building, Overdrive, cooldown) and seconds left, ready, last school, spell power and magicka regeneration multipliers now, effects boosted, enemies with heat, hand lights being scaled (and held steady), the Overdrive key, the visual preset (Full, Performance or Custom), the cost (the main thread's work a frame, microseconds), the spells' overcharge (size, red-zone wildness, focus pull, explosions / hazards / hit effects grown), TrueHUD's special bar (missing, off, taken by another mod, ours), and the settings. Read only.","inputSchema":{"type":"object","properties":{}},"readOnly":true})";
 
 		constexpr const char* kMenu =
-			R"({"description":"Arcane Overdrive - set=charge value=0..100 sets the player's Overdrive bar; set=heat value=0..100 sets the Heat bar; set=stage value=0..4 forces Cold, Warm, Hot, Overheating (the heat) or Overdrive; set=overdrive starts Overdrive, gate or not; set=key presses the Overdrive key; set=hold value=0|1 holds it down or lets it go (the focus gate); set=preset value=0..2 picks Milk Drinker, Dragonborn or Aedra; set=reload reads the advanced file again; set=setting key=<key of either settings file> value=<whole number> sets any setting. Not saved from here.","inputSchema":{"type":"object","properties":{"set":{"type":"string"},"key":{"type":"string"},"value":{"type":"number"}}}})";
+			R"({"description":"Arcane Overdrive - set=charge value=0..100 sets the player's Overdrive bar; set=heat value=0..100 sets the Heat bar; set=stage value=0..4 forces Cold, Warm, Hot, Overheating (the heat) or Overdrive; set=overdrive starts Overdrive, gate or not; set=key presses the Overdrive key; set=hold value=0|1 holds it down or lets it go (the focus gate); set=preset value=0..2 picks Milk Drinker, Dragonborn or Aedra; set=visuals value=0|1 picks the Full or Performance visual preset (the advanced file's [Performance] lines say what Performance turns off, the clashes' designs, light and particle lights included); set=reload reads the advanced file again; set=setting key=<key of either settings file> value=<whole number> sets any setting. Not saved from here.","inputSchema":{"type":"object","properties":{"set":{"type":"string"},"key":{"type":"string"},"value":{"type":"number"}}}})";
 
 		using json = nlohmann::json;
 
@@ -59,6 +61,9 @@ namespace Plugin
 			out["misfires"] = v.misfires;
 			const auto preset = SettingsText::PresetOf(Config());
 			out["preset"] = preset ? SettingsText::kPresets[*preset].name : "Custom";
+			static constexpr const char* kVisualNames[]{ "Full", "Performance" };
+			const auto                   visuals = SettingsText::VisualsOf(Config(), Crossfire::VisualsNow());
+			out["visuals"] = visuals ? kVisualNames[*visuals] : "Custom";
 			out["lastSchool"] = std::string(Heat::SchoolName(v.last));
 			out["spellPower"] = v.bonus;
 			out["magickaRegen"] = v.regen;
@@ -124,6 +129,8 @@ namespace Plugin
 				HoldOverdriveKey(number != 0.0f);
 			} else if (set == "preset" && haveNumber && number >= 0.0f && number < static_cast<float>(std::size(SettingsText::kPresets))) {
 				ApplyPreset(static_cast<std::size_t>(number));
+			} else if (set == "visuals" && haveNumber && (number == 0.0f || number == 1.0f)) {
+				ApplyVisualPreset(number == 1.0f);
 			} else if (set == "reload") {
 				ok = ReloadAdvanced();
 			} else if (set == "setting") {
@@ -134,7 +141,7 @@ namespace Plugin
 			}
 			if (a_write) {
 				a_write(a_sink, ok ? R"({"queued":true})" :
-									 R"j({"queued":false,"error":"set is charge or heat (value), stage (value 0-4), overdrive, key, hold (value 0 or 1), preset (value 0-2), reload or setting (key, value)"})j");
+									 R"j({"queued":false,"error":"set is charge or heat (value), stage (value 0-4), overdrive, key, hold (value 0 or 1), preset (value 0-2), visuals (value 0 or 1), reload or setting (key, value)"})j");
 			}
 		}
 

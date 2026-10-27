@@ -35,9 +35,9 @@ namespace IniText
 	template <class S>
 	struct Key
 	{
-		const char* name;
-		int (*get)(const S&);
-		void (*set)(S&, int);
+		const char* name{};
+		int (*get)(const S&){};
+		void (*set)(S&, int){};
 		const char* section{ "Settings" };
 		const char* note{ nullptr };
 	};

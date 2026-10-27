@@ -718,8 +718,8 @@ namespace Crossfire::Core
 
 		struct Family
 		{
-			Look                  look;
-			std::span<const Word> words;
+			Look                  look{};
+			std::span<const Word> words{};
 		};
 
 		constexpr Word kPhysical[]{ W("arrow"), W("quiver"), W("bounddagger"), W("boundsword"), W("boundmace"), W("boundpike"), W("boundrapier"),
@@ -822,6 +822,16 @@ namespace Crossfire::Core
 	{
 		const auto i = static_cast<std::size_t>(a_look);
 		return i < kLooks ? kLookNames[i] : std::string_view{ "?" };
+	}
+
+	Rgb LookTint(Look a_look) noexcept
+	{
+		// each design's first color, as the designs were drawn (clash designs.py), in Look's order
+		constexpr std::array<Rgb, kLooks> kTints{ { { 251, 162, 96 }, { 152, 203, 222 }, { 146, 136, 230 }, { 125, 150, 100 }, { 100, 212, 255 },
+			{ 250, 18, 5 }, { 232, 211, 151 }, { 224, 90, 42 }, { 100, 0, 210 }, { 15, 135, 95 }, { 152, 203, 222 }, { 181, 159, 155 },
+			{ 116, 140, 205 }, { 217, 72, 72 }, { 220, 215, 200 }, { 180, 190, 210 } } };
+		const auto                        i = static_cast<std::size_t>(a_look);
+		return i < kLooks ? kTints[i] : Rgb{ 255, 255, 255 };
 	}
 
 	Look LookOf(const LookFacts& a_facts) noexcept
@@ -1580,12 +1590,12 @@ namespace Crossfire::Core
 
 		struct Setting
 		{
-			std::string_view section, key;
-			Type             type;
-			float            lo, hi;
-			float (*get)(const Config&);
-			void (*set)(Config&, float);
-			std::string_view note;
+			std::string_view section{}, key{};
+			Type             type{};
+			float            lo{}, hi{};
+			float (*get)(const Config&){};
+			void (*set)(Config&, float){};
+			std::string_view note{};
 		};
 
 #define CF_BOOL(sec, key, field, note)                                                                                                                  \
@@ -1675,6 +1685,9 @@ namespace Crossfire::Core
 			CF_BOOL("Effects", "SafeExplosionsOnly", safeExplosionsOnly, "skip an explosion that would do more than show (damage, an enchantment, something it spawns)"),
 			CF_BOOL("Effects", "StandInBursts", standInBursts, "a spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts as its element's spells do"),
 			CF_FLOAT("Effects", "BurstScale", burstScale, 0.5f, 3.0f, "how big a clash's burst is"),
+			CF_BOOL("Effects", "Designs", designs, "a clash's own effect, drawn for its kind of spell in its color, on top of its burst"),
+			CF_FLOAT("Effects", "ClashLight", clashLight, 0.0f, 300.0f, "percent: the light a clash's design casts on the ground and on its smoke and pieces (0 = none)"),
+			CF_BOOL("Effects", "ParticleLights", particleLights, "the designs' bursts and flying pieces light their surroundings with ENB's or Community Shaders' particle lights"),
 			CF_INT("Effects", "MaxExplosionsPerFrame", maxExplosionsPerFrame, 0.0f, 32.0f, "at most this many bursts in one frame"),
 			CF_FLOAT("Effects", "ExplosionCooldown", explosionCooldown, 0.0f, 5.0f, "seconds between bursts for the same two shooters (sprays clash many times a second)"),
 			CF_INT("Effects", "MaxContactsPerFrame", maxContactsPerFrame, 1.0f, 512.0f, "at most this many clashes are settled in one frame"),

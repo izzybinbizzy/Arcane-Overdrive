@@ -209,6 +209,19 @@ namespace Crossfire
 			ImGuiMCP::BeginDisabled(!c.explosions);
 			Check(e, "Only harmless bursts", c.safeExplosionsOnly, "Skip a burst that would do more than show: damage, an enchantment, something it spawns.");
 			Check(e, "Stand-in bursts", c.standInBursts, "A spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts the way its element's spells do.");
+			Check(e, "Clash designs", c.designs, "A clash's own effect, drawn for its kind of spell in the spell's color, on top of its burst.");
+			{
+				int lightPct = static_cast<int>(std::lround(std::clamp(c.clashLight, 0.0f, 300.0f)));
+				if (ImGuiMCP::SliderInt(T("Clash light"), &lightPct, 0, 300, "%d%%")) {
+					c.clashLight = static_cast<float>(lightPct);
+					e.After(true);
+				}
+				ImGuiMCP::SetItemTooltip("%s", T("The light a clash casts, in the spell's color, flaring and fading with it: it lights the ground "
+												 "and the clash's smoke and pieces. 0% turns it off."));
+			}
+			Check(e, "Particle lights", c.particleLights,
+				"The burst and its flying pieces light their surroundings as they scatter (ENB's or Community Shaders' particle lights; "
+				"nothing on Vanilla).");
 			ImGuiMCP::EndDisabled();
 
 			ImGuiMCP::EndDisabled();

@@ -10,6 +10,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
 #endif
+#include "ClashShared.h"
 #include "Plugin.h"
 
 // SKSE Menu Framework's own header (theirs, MIT): its warnings are not ours, and ours are errors (xmake.lua) - under
@@ -125,6 +126,26 @@ namespace Plugin
 					"burnout with no penalty. Dragonborn: Overdrive only in the sweet spot, a misfire when too hot. Aedra: a narrow sweet spot, "
 					"a misfire staggers you and bites your magicka, a long burnout with weaker spells, and enemy mages build heat too. "
 					"The damage bonus is the same in all three. Custom: you changed a value here or in the advanced file.");
+			}
+
+			// Full or Performance: the costly effects on or off together; which ones Performance covers is the advanced file's
+			// [Performance] section
+			Heading(Icon::kStar, "Visuals");
+			{
+				const auto               clash = Crossfire::VisualsNow();
+				const auto               now = SettingsText::VisualsOf(s, clash);
+				static const char* const kNames[] = { "Full (the default)", "Performance", "Custom" };
+				int                      pick = now ? *now : 2;
+				if (ImGuiMCP::Combo("Visual preset", &pick, kNames, 3) && pick < 2) {
+					const bool performance = pick == 1;
+					SettingsText::ApplyVisuals(s, performance);
+					Crossfire::SetVisuals(SettingsText::ClashVisuals(s, performance), true);
+					save = true;
+				}
+				Tip("Full: every effect on. Performance: the costly ones off - by default the clashes' own effects, their lights and "
+					"particle lights, your explosions growing, the flare and the red-zone sparks. Which ones Performance turns off is "
+					"yours to pick: the [Performance] section of SpellMasteryHeat Advanced.ini, one line each (1 = off). Custom: you "
+					"changed one of them yourself.");
 			}
 
 			Heading(Icon::kBolt, "Overdrive");

@@ -11,6 +11,7 @@
 // Threads: the menu changes the settings on the render thread and DevBench on its own, while the main thread reads them
 // every frame. The one copy here is behind a lock, and everyone else works on a copy (Config / SetConfig).
 
+#include "ClashShared.h"
 #include "Plugin.h"
 
 #include <sstream>
@@ -100,6 +101,17 @@ namespace Plugin
 	{
 		std::lock_guard lock(gLock);
 		SettingsText::ApplyPreset(gSettings, a_preset);
+	}
+
+	void ApplyVisualPreset(bool a_performance)
+	{
+		std::array<bool, 3> clash{};
+		{
+			std::lock_guard lock(gLock);
+			SettingsText::ApplyVisuals(gSettings, a_performance);
+			clash = SettingsText::ClashVisuals(gSettings, a_performance);
+		}
+		Crossfire::SetVisuals(clash, false);
 	}
 
 	void LoadSettings()
