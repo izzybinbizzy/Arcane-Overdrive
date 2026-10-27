@@ -269,16 +269,15 @@ namespace Crossfire
 		[[nodiscard]] float HeadingOf(RE::Projectile* a_p) { return a_p ? a_p->GetAngleZ() : 0.0f; }
 
 		// the height of the ground under a meeting, as the design's `ClashGround` node holds it (its bouncing pieces land
-		// there): the shooter's feet, both casters standing on it, else the land under it, else the 100 the designs assume
+		// there): the land right under it, else the shooter's feet (indoors), else the 100 the designs assume
 		[[nodiscard]] float GroundBelow(RE::Projectile* a_p, Vec3 a_at, float a_scale)
 		{
 			float feet = a_at.z - 100.0f;
-			auto  shooter = a_p ? a_p->GetProjectileRuntimeData().shooter.get() : RE::NiPointer<RE::TESObjectREFR>();
 			float land = 0.0f;
-			if (shooter) {
-				feet = shooter->GetPositionZ();
-			} else if (auto* tes = RE::TES::GetSingleton(); tes && tes->GetLandHeight(N(a_at), land)) {
+			if (auto* tes = RE::TES::GetSingleton(); tes && tes->GetLandHeight(N(a_at), land)) {
 				feet = land;
+			} else if (auto shooter = a_p ? a_p->GetProjectileRuntimeData().shooter.get() : RE::NiPointer<RE::TESObjectREFR>()) {
+				feet = shooter->GetPositionZ();
 			}
 			return std::clamp(feet - a_at.z, -400.0f, -10.0f) / Scale(a_scale);
 		}
@@ -403,7 +402,8 @@ namespace Crossfire
 			const float heading = HeadingOf(a_p);
 			const float ground = GroundBelow(a_p, a_at, a_cfg.burstScale);
 			Arrive(ModelHere(art, a_at, a_cfg.burstScale, a_p, heading), LightOf(&a_info), ground, a_cfg.burstScale, true);
-			Arrive(ModelHere(also, a_at, a_cfg.burstScale, a_p, heading), LightOf(a_also), ground, a_cfg.burstScale, true);
+			// one light a clash: the second family's design is tinted but casts none
+			Arrive(ModelHere(also, a_at, a_cfg.burstScale, a_p, heading), LightOf(a_also), ground, a_cfg.burstScale, !art);
 			return true;
 		}
 
@@ -951,7 +951,7 @@ namespace Crossfire
 			}
 		}
 		auto* tasks = SKSE::GetTaskInterface();
-		if (!look || !tasks || !std::isfinite(a_ahead) || !std::isfinite(a_up)) {
+		if (!look || (!a_pair.empty() && !PairArt(a_pair)) || !tasks || !std::isfinite(a_ahead) || !std::isfinite(a_up)) {
 			return false;
 		}
 		tasks->AddTask([look = *look, pair = std::string(a_pair), a_color, a_ahead, a_up]() {

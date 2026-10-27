@@ -78,11 +78,13 @@ namespace Crossfire
 					std::array<int, 3> c{ -1, -1, -1 };
 					const char*        at = text.data();
 					const char*        end = at + text.size();
-					for (auto& v : c) {
-						const auto [next, err] = std::from_chars(at, end, v);
-						at = next < end && *next == ',' ? next + 1 : next;
+					bool               good = true;
+					for (std::size_t i = 0; i < c.size() && good; ++i) {
+						const auto [next, err] = std::from_chars(at, end, c[i]);
+						good = err == std::errc{} && (i + 1 < c.size() ? next < end && *next == ',' : next == end);
+						at = next + (i + 1 < c.size() ? 1 : 0);
 					}
-					if (at != end || std::ranges::any_of(c, [](int v) { return v < 0 || v > 255; })) {
+					if (!good || std::ranges::any_of(c, [](int v) { return v < 0 || v > 255; })) {
 						return DevBenchGlue::Refusal("color is three whole numbers 0-255: \"r,g,b\"");
 					}
 					color = Core::Rgb{ static_cast<std::uint8_t>(c[0]), static_cast<std::uint8_t>(c[1]), static_cast<std::uint8_t>(c[2]) };
@@ -92,7 +94,7 @@ namespace Crossfire
 				const auto ahead = static_cast<float>(DevBenchGlue::Number(a_args, "ahead").value_or(165.0));
 				const auto up = static_cast<float>(DevBenchGlue::Number(a_args, "up").value_or(110.0));
 				if (!ShowDesign(look, pair, color, ahead, up)) {
-					return DevBenchGlue::Refusal("no such look '" + look + "'");
+					return DevBenchGlue::Refusal("no such look '" + look + "' or pair '" + pair + "'");
 				}
 				return json{ { "ok", true }, { "look", look }, { "pair", pair }, { "note", "played on the main thread; models / tinted / pairs count it" } };
 			}

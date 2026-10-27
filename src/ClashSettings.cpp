@@ -229,9 +229,14 @@ namespace Crossfire
 
 	void SetVisuals(const std::array<bool, 3>& a_on, bool a_save)
 	{
-		auto c = MenuCopy();
+		// the player's own percent comes back when the preset turns the light on again
+		static std::atomic<float> before{ 100.0f };
+		auto                      c = MenuCopy();
+		if (c.clashLight > 0.0f) {
+			before = c.clashLight;
+		}
 		c.designs = a_on[0];
-		c.clashLight = a_on[1] ? (c.clashLight > 0.0f ? c.clashLight : 100.0f) : 0.0f;
+		c.clashLight = a_on[1] ? before.load() : 0.0f;
 		c.particleLights = a_on[2];
 		Submit(c, a_save);
 	}
