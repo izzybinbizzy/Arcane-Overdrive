@@ -703,7 +703,7 @@ namespace Crossfire::Core
 		Tuning tuning;
 		// [Effects]
 		bool  explosions{ true };
-		bool  safeExplosionsOnly{ true };  // skip an explosion that would do anything but show (damage, enchantment, spawns)
+		bool  safeExplosionsOnly{ true };  // skip an explosion that would do anything but show (damage, enchantment, push, spawns)
 		bool  standInBursts{ true };       // a spell with no burst of its own (Firebolt) bursts as its element's spells do
 		float burstScale{ 1.5f };          // how big a clash's burst is
 		bool  designs{ true };             // a clash's own designed effect, on top of its burst

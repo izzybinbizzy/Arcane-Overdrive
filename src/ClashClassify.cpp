@@ -284,12 +284,13 @@ namespace Crossfire
 		return nullptr;
 	}
 
-	// an explosion that only shows: no damage of its own, no enchantment, nothing it spawns or places. The ones spells
-	// use are like this (a spell's own effect is what hurts, and Crossfire does not deliver it); a mod's may not be.
+	// an explosion that only shows: no damage of its own, no enchantment, no push, nothing it spawns or places. A push
+	// knocks people down (Incinerate's burst, Fire's stand-in under some magic overhauls, threw the other caster down)
 	bool SafeExplosion(const RE::BGSExplosion* a_explosion)
 	{
-		return a_explosion && !a_explosion->formEnchanting && !(a_explosion->data.damage > 0.0f) && !a_explosion->data.spawnProjectile &&
-		       !a_explosion->data.impactPlacedObject;
+		using Flag = RE::BGSExplosionData::Flag;
+		return a_explosion && !a_explosion->formEnchanting && !(a_explosion->data.damage > 0.0f) && !(a_explosion->data.force > 0.0f) &&
+		       !a_explosion->data.flags.any(Flag::kKnockDown_Always) && !a_explosion->data.spawnProjectile && !a_explosion->data.impactPlacedObject;
 	}
 
 	namespace
@@ -299,12 +300,18 @@ namespace Crossfire
 		std::array<std::string, Core::kLooks>          gClashArt{};         // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
 		std::unordered_map<std::string, std::string>   gPairArt;            // a pair's name -> its mesh, when there is one
 		std::atomic<bool>                              gArtReady{ false };  // FindClashArt has run (DevBench may ask before)
+
+		// a stand-in plays again and again while two streams grind: one that also flashes the screen shows by its model only
+		[[nodiscard]] bool QuietStandIn(const RE::BGSExplosion* a_explosion)
+		{
+			return SafeExplosion(a_explosion) && !a_explosion->imageSpaceModifying;
+		}
 	}
 
 	// For each element, the burst a clash shows for a spell that has none of its own (Firebolt, Ice Spike, Lightning
 	// Bolt): the explosion of the costliest aimed spell of that element. Skyrim.esm's own spells first, so the look is the
 	// game's; any plugin's when the game has none. Most spell explosions carry the spell's harm (82 of 102 in his order),
-	// so one that does is shown by its MODEL only (StandInModel) - a visual, never the explosion itself.
+	// so one that does, pushes or flashes the screen is shown by its MODEL only (StandInModel) - never the explosion itself.
 	// ⛔ PAID FOR 2026-10-02: a runtime copy of the explosion with the harm taken out (IFormFactory::Create) crashed the
 	// game a few seconds after every load (0xc0000409 in ucrtbase, no crash log) - no forms are made at run time.
 	void FindStandInBursts()
@@ -342,7 +349,7 @@ namespace Crossfire
 			const auto* src = gStandIn[e];
 			SKSE::log::info("stand-in burst for {}: {}", Core::ElementName(static_cast<Core::Element>(e)),
 				src ? std::format("{:08X} ({}){}", src->GetFormID(), src->GetModel() ? src->GetModel() : "",
-						  SafeExplosion(src) ? "" : ", its model only (the explosion carries harm)") :
+						  QuietStandIn(src) ? "" : ", its model only (the explosion hurts, pushes or flashes the screen)") :
 					  std::string("none"));
 		}
 	}
@@ -403,13 +410,13 @@ namespace Crossfire
 	RE::BGSExplosion* StandInBurst(Core::Element a_element)
 	{
 		const auto e = static_cast<std::size_t>(a_element);
-		return e < gStandIn.size() && SafeExplosion(gStandIn[e]) ? gStandIn[e] : nullptr;
+		return e < gStandIn.size() && QuietStandIn(gStandIn[e]) ? gStandIn[e] : nullptr;
 	}
 
 	const char* StandInModel(Core::Element a_element)
 	{
 		const auto e = static_cast<std::size_t>(a_element);
-		if (e >= gStandIn.size() || !gStandIn[e] || SafeExplosion(gStandIn[e])) {
+		if (e >= gStandIn.size() || !gStandIn[e] || QuietStandIn(gStandIn[e])) {
 			return nullptr;
 		}
 		const char* m = gStandIn[e]->GetModel();

@@ -1724,7 +1724,7 @@ namespace Crossfire::Core
 			CF_BOOL("Show", "BarNames", struggle.barNames, "your name and theirs over the bar"),
 			CF_BOOL("Show", "BarSkills", struggle.barSkills, "both magic skills under the bar"),
 			CF_BOOL("Effects", "Explosions", explosions, "a destroyed projectile bursts where it was hit, with its own explosion"),
-			CF_BOOL("Effects", "SafeExplosionsOnly", safeExplosionsOnly, "skip an explosion that would do more than show (damage, an enchantment, something it spawns)"),
+			CF_BOOL("Effects", "SafeExplosionsOnly", safeExplosionsOnly, "skip an explosion that would do more than show (damage, an enchantment, a push, something it spawns)"),
 			CF_BOOL("Effects", "StandInBursts", standInBursts, "a spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts as its element's spells do"),
 			CF_FLOAT("Effects", "BurstScale", burstScale, 0.5f, 3.0f, "how big a clash's burst is"),
 			CF_BOOL("Effects", "Designs", designs, "a clash's own effect, drawn for its kind of spell in its color, on top of its burst"),

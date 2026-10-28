@@ -221,7 +221,7 @@ namespace Crossfire
 			Check(e, "Bursts", c.explosions, "A destroyed projectile bursts where it was hit, with its own explosion.");
 			layout.Beside();
 			ImGuiMCP::BeginDisabled(!c.explosions);
-			Check(e, "Only harmless bursts", c.safeExplosionsOnly, "Skip a burst that would do more than show: damage, an enchantment, something it spawns.");
+			Check(e, "Only harmless bursts", c.safeExplosionsOnly, "Skip a burst that would do more than show: damage, an enchantment, a push, something it spawns.");
 			Check(e, "Stand-in bursts", c.standInBursts, "A spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts the way its element's spells do.");
 			Check(e, "Clash designs", c.designs, "A clash's own effect, drawn for its kind of spell in the spell's color, on top of its burst.");
 			{
