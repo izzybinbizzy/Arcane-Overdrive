@@ -295,11 +295,10 @@ namespace Crossfire
 			const auto* first = AnyStream(a_first);
 			const auto* second = AnyStream(a_second);
 			const bool  design = gDesigns.Allow(a_key) || !a_grind;
-			if (first) {
-				BurstAt(first->entry, a_at, a_key, a_cfg, second ? second->info : nullptr, design);
-			}
+			// the second side carries the pair's design when the first side's burst was held back
+			const bool shown = first && BurstAt(first->entry, a_at, a_key, a_cfg, second ? second->info : nullptr, design);
 			if (second) {
-				BurstAt(second->entry, a_at, a_key ^ 0x9E3779B97F4A7C15ull, a_cfg, nullptr, design && !first);
+				BurstAt(second->entry, a_at, a_key ^ 0x9E3779B97F4A7C15ull, a_cfg, first && !shown ? first->info : nullptr, design && !shown);
 			}
 		}
 

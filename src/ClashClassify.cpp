@@ -284,8 +284,8 @@ namespace Crossfire
 		return nullptr;
 	}
 
-	// an explosion that only shows: no damage of its own, no enchantment, no push, nothing it spawns or places. A push
-	// knocks people down (Incinerate's burst, Fire's stand-in under some magic overhauls, threw the other caster down)
+	// an explosion that only shows: no damage of its own, no enchantment, no push, nothing it spawns or places (Incinerate's
+	// burst, Fire's stand-in under some magic overhauls, pushes with force 7 and may knock people down)
 	bool SafeExplosion(const RE::BGSExplosion* a_explosion)
 	{
 		using Flag = RE::BGSExplosionData::Flag;
@@ -419,8 +419,9 @@ namespace Crossfire
 		if (e >= gStandIn.size() || !gStandIn[e] || QuietStandIn(gStandIn[e])) {
 			return nullptr;
 		}
+		// the game's empty explosion art (FXEmptyExplosion...) draws nothing: not worth a spawn every spark
 		const char* m = gStandIn[e]->GetModel();
-		return m && *m ? m : nullptr;
+		return m && *m && std::string_view(m).find("FXEmpty") == std::string_view::npos ? m : nullptr;
 	}
 
 	// the cheapest of Skyrim.esm's own aimed Illusion fear spells (Fear itself), for "Winning scares weaker enemies"
