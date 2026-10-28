@@ -7,10 +7,11 @@
 //                                      elements does to each other, and what never clashes. Hand-edited; never written.
 //   SpellMasteryHeat Clash\*.ini       patches (another mod's spells, say), read in alphabetical order, same sections
 //   SpellMasteryHeat Clashes.ini       the settings, written by the menu (Core::WriteSettings); may also hold rules
-// Parsing is Core::ParseIni (Core.cpp, tested in tests/); this reads the files, resolves the excluded forms and hands
+// Parsing is Core::ParseIni (ClashCore.cpp, tested in tests/); this reads the files, resolves the excluded forms and hands
 // the result to the main thread.
 
 #include "ClashShared.h"
+#include "Guarded.h"
 
 namespace Crossfire
 {
@@ -24,9 +25,10 @@ namespace Crossfire
 		Core::Config                   gLive;      // main thread only
 		std::unordered_set<RE::FormID> gExcluded;  // main thread only
 
-		std::mutex               gMenuLock;  // guards the two below
+		std::mutex               gMenuLock;  // guards the three below
 		Core::Config             gMenu;
 		std::vector<std::string> gNotes;
+		std::uint64_t            gMenuGen{ 0 };  // counts the changes to gMenu, so a copy can tell it went stale
 
 		[[nodiscard]] bool ReadFile(const std::filesystem::path& a_path, std::string& a_out)
 		{
@@ -200,6 +202,7 @@ namespace Crossfire
 			std::scoped_lock lock(gMenuLock);
 			gMenu = config;
 			gNotes = notes;
+			++gMenuGen;
 		}
 		std::size_t keywords = 0;
 		for (const auto& list : config.keywords) {
@@ -221,6 +224,38 @@ namespace Crossfire
 		return gMenu;
 	}
 
+	Core::Config MenuCopy(std::uint64_t& a_gen)
+	{
+		std::scoped_lock lock(gMenuLock);
+		a_gen = gMenuGen;
+		return gMenu;
+	}
+
+	namespace
+	{
+		// the menu's copy, as it stands after a change, goes to the main thread (tasks run in order: the last one wins)
+		void Hand(Core::Config a_config, bool a_save)
+		{
+			auto* tasks = SKSE::GetTaskInterface();
+			if (!tasks) {
+				return;
+			}
+			tasks->AddTask([config = std::move(a_config), a_save]() {
+				Safe::Guarded("the clash settings taken", [&] {
+					const bool wasOn = gLive.enabled;
+					TakeSettings(gLive, config);
+					ClearInfo();  // a breath shout's spray is priced from ShoutStrength when first seen
+					if (wasOn != gLive.enabled) {
+						SKSE::log::info("turned {}", gLive.enabled ? "on" : "off");
+					}
+					if (a_save) {
+						Save(gLive);
+					}
+				});
+			});
+		}
+	}
+
 	std::array<bool, 3> VisualsNow()
 	{
 		const auto c = MenuCopy();
@@ -229,16 +264,20 @@ namespace Crossfire
 
 	void SetVisuals(const std::array<bool, 3>& a_on, bool a_save)
 	{
-		// the player's own percent comes back when the preset turns the light on again
-		static std::atomic<float> before{ 100.0f };
-		auto                      c = MenuCopy();
-		if (c.clashLight > 0.0f) {
-			before = c.clashLight;
-		}
-		c.designs = a_on[0];
-		c.clashLight = a_on[1] ? before.load() : 0.0f;
-		c.particleLights = a_on[2];
-		Submit(c, a_save);
+		Hand(
+			[&] {
+				std::scoped_lock lock(gMenuLock);
+				static float     before = 100.0f;  // the player's own percent comes back when the preset turns the light on again
+				if (gMenu.clashLight > 0.0f) {
+					before = gMenu.clashLight;
+				}
+				gMenu.designs = a_on[0];
+				gMenu.clashLight = a_on[1] ? before : 0.0f;
+				gMenu.particleLights = a_on[2];
+				++gMenuGen;
+				return gMenu;
+			}(),
+			a_save);
 	}
 
 	std::vector<std::string> LoadNotes()
@@ -249,33 +288,42 @@ namespace Crossfire
 
 	void Submit(const Core::Config& a_config, bool a_save)
 	{
-		{
+		Hand(
+			[&] {
+				std::scoped_lock lock(gMenuLock);
+				TakeSettings(gMenu, a_config);
+				++gMenuGen;
+				return gMenu;
+			}(),
+			a_save);
+	}
+
+	bool SubmitIf(const Core::Config& a_config, bool a_save, std::uint64_t a_gen)
+	{
+		bool taken = false;
+		auto now = [&] {
 			std::scoped_lock lock(gMenuLock);
-			TakeSettings(gMenu, a_config);
-		}
-		auto* tasks = SKSE::GetTaskInterface();
-		if (!tasks) {
-			return;
-		}
-		tasks->AddTask([a_config, a_save]() {
-			const bool wasOn = gLive.enabled;
-			TakeSettings(gLive, a_config);
-			ClearInfo();  // a breath shout's spray is priced from ShoutStrength when first seen
-			if (wasOn != gLive.enabled) {
-				SKSE::log::info("turned {}", gLive.enabled ? "on" : "off");
+			taken = gMenuGen == a_gen;
+			if (taken) {
+				TakeSettings(gMenu, a_config);
+				++gMenuGen;
 			}
-			if (a_save) {
-				Save(gLive);
-			}
-		});
+			return gMenu;
+		}();
+		if (taken || a_save) {
+			Hand(std::move(now), a_save);
+		}
+		return taken;
 	}
 
 	void ReloadSoon()
 	{
 		if (auto* tasks = SKSE::GetTaskInterface()) {
 			tasks->AddTask([]() {
-				LoadSettings();
-				SKSE::log::info("settings reloaded from the menu");
+				Safe::Guarded("the clash settings reloaded", [] {
+					LoadSettings();
+					SKSE::log::info("settings reloaded from the menu");
+				});
 			});
 		}
 	}

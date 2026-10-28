@@ -45,18 +45,23 @@
 
 #include "Plugin.h"
 #include "ClashShared.h"
+#include "Guarded.h"
 #include "Translation.h"
 
 namespace
 {
+	using Safe::Guarded;
+
 	// ------------------------------------------------------------------ every frame: the player's update
 	struct PlayerUpdate
 	{
 		static void thunk(RE::PlayerCharacter* a_this, float a_delta)
 		{
 			func(a_this, a_delta);
-			Plugin::Frame(a_delta);
-			Crossfire::Update(a_delta);  // the clashes and spell struggles (ClashPass.cpp)
+			const auto start = std::chrono::steady_clock::now();
+			Guarded("the meters", [&] { Plugin::Frame(a_delta); });
+			Guarded("the clashes", [&] { Crossfire::Update(a_delta); });  // the clashes and spell struggles (ClashPass.cpp)
+			Plugin::NoteFrameCost(std::chrono::duration<float, std::micro>(std::chrono::steady_clock::now() - start).count());
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 		static void                                    Install()
@@ -80,7 +85,7 @@ namespace
 			// a new effect only: one already running has had its bonus, and a second adjustment would compound it
 			if (a_caster && a_this->elapsedSeconds <= 0.0f && a_this->spell && a_this->effect && a_this->effect->baseEffect &&
 				std::isfinite(a_this->magnitude)) {
-				const float k = Plugin::Multiplier(a_caster, a_this->spell, a_this->effect->baseEffect);
+				const float k = Guarded("the spell bonus", 1.0f, [&] { return Plugin::Multiplier(a_caster, a_this->spell, a_this->effect->baseEffect); });
 				if (k != 1.0f) {
 					a_this->magnitude *= k;
 				}
@@ -103,7 +108,7 @@ namespace
 		static void thunk(T* a_this)
 		{
 			func(a_this);
-			Plugin::NoteSpawned(a_this);
+			Guarded("an explosion or hazard made", [&] { Plugin::NoteSpawned(a_this); });
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 		static void                                    Install()
@@ -126,7 +131,27 @@ namespace
 		{
 			if (a_event && a_event->object) {
 				if (auto* actor = a_event->object->As<RE::Actor>()) {
-					Plugin::OnCast(actor, RE::TESForm::LookupByID<RE::MagicItem>(a_event->spell));
+					Guarded("a spell cast", [&] { Plugin::OnCast(actor, RE::TESForm::LookupByID<RE::MagicItem>(a_event->spell)); });
+				}
+			}
+			return RE::BSEventNotifyControl::kContinue;
+		}
+	};
+
+	// ------------------------------------------------------------------ the player's spells hitting someone (the lingering hit effects)
+	class HitSink final : public RE::BSTEventSink<RE::TESHitEvent>
+	{
+	public:
+		static HitSink* Get()
+		{
+			static HitSink sink;
+			return &sink;
+		}
+		RE::BSEventNotifyControl ProcessEvent(const RE::TESHitEvent* a_event, RE::BSTEventSource<RE::TESHitEvent>*) override
+		{
+			if (a_event && a_event->cause && a_event->cause->IsPlayerRef() && a_event->target && a_event->source) {
+				if (auto* target = a_event->target->As<RE::Actor>()) {
+					Guarded("a hit", [&] { Plugin::NoteHit(target, a_event->source); });
 				}
 			}
 			return RE::BSEventNotifyControl::kContinue;
@@ -146,6 +171,10 @@ namespace
 		case RE::INPUT_DEVICE::kKeyboard:
 			return static_cast<int>(id);
 		case RE::INPUT_DEVICE::kMouse:
+			// the wheel turns in steps, never held: no key
+			if (id == RE::BSWin32MouseDevice::Keys::kWheelUp || id == RE::BSWin32MouseDevice::Keys::kWheelDown) {
+				return -1;
+			}
 			return 256 + static_cast<int>(id);
 		case RE::INPUT_DEVICE::kGamepad:
 			return Plugin::SettingsText::GamepadCode(id);
@@ -164,33 +193,51 @@ namespace
 		}
 		RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) override
 		{
-			for (auto* e = a_event ? *a_event : nullptr; e; e = e->next) {
-				const auto* button = e->AsButtonEvent();
-				if (!button || (!button->IsDown() && !button->IsUp())) {
-					continue;
-				}
-				const int code = CodeOf(*button);
-				if (code < 0) {
-					continue;
-				}
-				if (button->IsDown() && gCapture.exchange(false)) {
-					if (code != 1) {  // Esc cancels
-						Plugin::ApplySetting("OverdriveKey", code);
-						Plugin::SaveSettings();
-						SKSE::log::info("Overdrive key set: {} ({})", Plugin::SettingsText::KeyName(code), code);
+			Guarded("the Overdrive key", [&] {
+				for (auto* e = a_event ? *a_event : nullptr; e; e = e->next) {
+					const auto* button = e->AsButtonEvent();
+					if (button && (button->IsDown() || button->IsUp())) {
+						Button(*button);
 					}
-					continue;
 				}
-				const auto s = Plugin::Config();
-				if (!s.enabled || s.tuning.mode != Heat::OverdriveMode::kKey || code != s.overdriveKey) {
-					continue;
-				}
-				Plugin::HoldOverdriveKey(button->IsDown());  // held: the focus gate
-				if (button->IsDown()) {
-					Plugin::PressOverdriveKey();
-				}
-			}
+			});
 			return RE::BSEventNotifyControl::kContinue;
+		}
+
+	private:
+		std::atomic<int> held{ -1 };  // the key held for the focus gate
+
+		void Button(const RE::ButtonEvent& a_button)
+		{
+			const int code = CodeOf(a_button);
+			if (code < 0) {
+				return;
+			}
+			if (a_button.IsDown() && gCapture.exchange(false)) {
+				if (code != 1) {  // Esc cancels
+					Plugin::ApplySetting("OverdriveKey", code);
+					Plugin::SaveSettings();
+					SKSE::log::info("Overdrive key set: {} ({})", Plugin::SettingsText::KeyName(code), code);
+				}
+				return;
+			}
+			// a release always lets go, whatever the settings say now, so the focus gate cannot stay held
+			if (a_button.IsUp()) {
+				if (code == held.load()) {
+					held = -1;
+					Plugin::HoldOverdriveKey(false);
+				}
+				return;
+			}
+			// a press in a pausing menu (the console, the map) would fire Overdrive as the menu closes
+			auto*      ui = RE::UI::GetSingleton();
+			const auto s = Plugin::Config();
+			if (!ui || ui->GameIsPaused() || !s.enabled || s.tuning.mode != Heat::OverdriveMode::kKey || code != s.overdriveKey) {
+				return;
+			}
+			held = code;
+			Plugin::HoldOverdriveKey(true);
+			Plugin::PressOverdriveKey();
 		}
 	};
 
@@ -201,7 +248,7 @@ namespace
 		static void thunk(RE::FlameProjectile* a_this, RE::TESObjectREFR* a_ref, const RE::NiPoint3& a_at, const RE::NiPoint3& a_velocity,
 			RE::hkpCollidable* a_collidable, std::int32_t a_arg6, std::uint32_t a_arg7)
 		{
-			if (Crossfire::Struggles::FlameHitPastFront(a_this, a_at)) {
+			if (Guarded("a spray's hit", false, [&] { return Crossfire::Struggles::FlameHitPastFront(a_this, a_at); })) {
 				return;
 			}
 			func(a_this, a_ref, a_at, a_velocity, a_collidable, a_arg6, a_arg7);
@@ -214,7 +261,10 @@ namespace
 	// is the other caster, so a locked spray picks no target at all
 	struct FlameTargetPick
 	{
-		static bool                                    thunk(RE::FlameProjectile* a_this) { return Crossfire::Struggles::FlameLocked(a_this) ? false : func(a_this); }
+		static bool thunk(RE::FlameProjectile* a_this)
+		{
+			return Guarded("a spray's target pick", false, [&] { return Crossfire::Struggles::FlameLocked(a_this); }) ? false : func(a_this);
+		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
@@ -223,7 +273,7 @@ namespace
 	{
 		static bool thunk(RE::BeamProjectile* a_this)
 		{
-			Crossfire::LockBeam(a_this);
+			Guarded("a bolt's auto lock", [&] { Crossfire::LockBeam(a_this); });
 			return func(a_this);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -253,11 +303,12 @@ namespace
 		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
 			holder->AddEventSink<RE::TESSpellCastEvent>(CastSink::Get());
+			holder->AddEventSink<RE::TESHitEvent>(HitSink::Get());
 		}
 		if (auto* input = RE::BSInputDeviceManager::GetSingleton()) {
 			input->AddEventSink(InputSink::Get());
 		}
-		SKSE::log::info("hooked the player update, each effect as it lands and each explosion / hazard as it is made; listening for spell casts and the Overdrive key");
+		SKSE::log::info("hooked the player update, each effect as it lands and each explosion / hazard as it is made; listening for spell casts, the player's hits and the Overdrive key");
 		// the clashes and spell struggles
 		Crossfire::LoadSettings();
 		Crossfire::Survey();
@@ -289,34 +340,37 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 		if (!a_msg) {
 			return;
 		}
-		switch (a_msg->type) {
-		case SKSE::MessagingInterface::kPostLoad:
-			Plugin::OfferToDevBench();
-			Crossfire::OfferToDevBench();
-			Crossfire::FindTdm();
-			Plugin::FindTrueHud();
-			Plugin::RegisterArcBar();  // Reticle Arcs takes add-on bars now or never
-			break;
-		case SKSE::MessagingInterface::kDataLoaded:
-			OnDataLoaded();
-			break;
-		case SKSE::MessagingInterface::kPreLoadGame:
-		case SKSE::MessagingInterface::kPostLoadGame:
-		case SKSE::MessagingInterface::kNewGame:
-			Crossfire::Reset();  // every projectile and caster handle belongs to the world going away
-			if (a_msg->type == SKSE::MessagingInterface::kPostLoadGame) {
+		Guarded("SKSE's message", [&] {
+			switch (a_msg->type) {
+			case SKSE::MessagingInterface::kPostLoad:
+				Plugin::OfferToDevBench();
+				Crossfire::OfferToDevBench();
+				Crossfire::FindTdm();
+				Plugin::FindTrueHud();
+				Plugin::RegisterArcBar();  // Reticle Arcs takes add-on bars now or never
+				break;
+			case SKSE::MessagingInterface::kDataLoaded:
+				OnDataLoaded();
+				break;
+			case SKSE::MessagingInterface::kPreLoadGame:
+			case SKSE::MessagingInterface::kPostLoadGame:
+			case SKSE::MessagingInterface::kNewGame:
+				Crossfire::Reset();  // every projectile and caster handle belongs to the world going away
+				if (a_msg->type == SKSE::MessagingInterface::kPostLoadGame) {
+					break;
+				}
+				// every meter belongs to the world going away; hand lights go back as they were found
+				Plugin::ResetAll();
+				Plugin::ReleaseHands();
+				Plugin::ReleaseOverload();
+				Plugin::ReleaseMarks();
+				Plugin::ForgetTrueHud();
+				Plugin::ResetFrameCost();
+				break;
+			default:
 				break;
 			}
-			// every meter belongs to the world going away; hand lights go back as they were found
-			Plugin::ResetAll();
-			Plugin::ReleaseHands();
-			Plugin::ReleaseOverload();
-			Plugin::ReleaseMarks();
-			Plugin::ForgetTrueHud();
-			break;
-		default:
-			break;
-		}
+		});
 	});
 	return true;
 }

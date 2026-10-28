@@ -23,6 +23,7 @@ namespace Plugin
 		std::mutex  gLock;
 		Settings    gSettings;
 		std::string gAdvancedWritten;  // the advanced file's text as last read or written
+		std::mutex  gSaveLock;         // one save at a time: the menu and the key capture may both save
 
 		std::string AdvancedText(const Settings& a_s)
 		{
@@ -144,21 +145,21 @@ namespace Plugin
 
 	bool ReloadAdvanced()
 	{
-		Settings s = Config();
-		bool     all = false;
-		if (ReadFile(SettingsText::kAdvancedFile, s, all) < 0) {
+		// read straight into the one copy under its lock, so a change made meanwhile on another thread is not lost
+		bool            all = false;
+		std::lock_guard lock(gLock);
+		if (ReadFile(SettingsText::kAdvancedFile, gSettings, all) < 0) {
 			SKSE::log::warn("settings: {} could not be read", SettingsText::kAdvancedFile);
 			return false;
 		}
-		SetConfig(s);
-		std::lock_guard lock(gLock);
-		gAdvancedWritten = AdvancedText(s);
+		gAdvancedWritten = AdvancedText(gSettings);
 		SKSE::log::info("settings: {} read again", SettingsText::kAdvancedFile);
 		return true;
 	}
 
 	void SaveSettings()
 	{
+		std::scoped_lock   save(gSaveLock);
 		const auto         s = Config();
 		std::ostringstream menu;
 		SettingsText::WriteMenu(menu, s);

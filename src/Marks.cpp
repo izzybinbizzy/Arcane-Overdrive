@@ -88,30 +88,10 @@ namespace Plugin
 		// the impacts of the player's own fire / frost spell projectiles, not seen before
 		void Capture(RE::PlayerCharacter* a_player, const Marks::Rules& a_r)
 		{
-			auto* mgr = RE::Projectile::Manager::GetSingleton();
-			if (!mgr) {
-				return;
-			}
-			std::vector<RE::ProjectileHandle> handles;
-			{
-				RE::BSSpinLockGuard guard(mgr->projectileLock);
-				for (const auto* list : { &mgr->unlimited, &mgr->limited, &mgr->pending }) {
-					for (const auto& h : *list) {
-						handles.push_back(h);
-					}
-				}
-			}
-			std::unordered_set<const void*> now;
-			for (auto& h : handles) {
-				auto proj = h.get();
-				if (!proj) {
-					continue;
-				}
-				auto&      rd = proj->GetProjectileRuntimeData();
-				const auto shooter = rd.shooter.get();
-				if (shooter.get() != a_player || !rd.spell) {
-					continue;
-				}
+			static std::unordered_set<const void*> now;  // reused, so its buckets are not made again each frame
+			now.clear();
+			for (const auto& proj : PlayerSpellsNow(a_player)) {
+				auto&     rd = proj->GetProjectileRuntimeData();
 				const int element = Read(rd.spell).element;
 				if (element != 1 && element != 2) {
 					continue;
@@ -132,7 +112,7 @@ namespace Plugin
 					}
 				}
 			}
-			gSeen = std::move(now);
+			std::swap(gSeen, now);
 		}
 
 		// an actor a mark may hurt: an enemy of the player's (the page's word), alive - never a guard, a bystander or her horse
@@ -157,20 +137,31 @@ namespace Plugin
 			if (!lists || a_ticked.empty()) {
 				return;
 			}
-			std::vector<RE::NiPointer<RE::Actor>> actors;
+			// the cheap test (inside a mark) first; whether one may be hurt is asked once, of those inside one
+			static std::vector<RE::NiPointer<RE::Actor>> actors;
+			static std::vector<std::int8_t>              hurtable;  // -1 not asked yet
+			actors.clear();
 			for (auto& h : lists->highActorHandles) {
-				if (auto a = h.get(); a && Hurtable(a.get(), a_player)) {
+				if (auto a = h.get(); a && a.get() != a_player) {
 					actors.push_back(std::move(a));
 				}
 			}
+			hurtable.assign(actors.size(), -1);
 			for (const auto id : a_ticked) {
 				const auto* mark = gPool.Find(id);
 				if (!mark) {
 					continue;
 				}
 				const auto resistAv = mark->element == 1 ? RE::ActorValue::kResistFire : RE::ActorValue::kResistFrost;
-				for (auto& a : actors) {
+				for (std::size_t i = 0; i < actors.size(); ++i) {
+					auto& a = actors[i];
 					if (!Marks::Inside(mark->at, PointOf(a->GetPosition()), a_r.radius)) {
+						continue;
+					}
+					if (hurtable[i] < 0) {
+						hurtable[i] = Hurtable(a.get(), a_player) ? 1 : 0;
+					}
+					if (hurtable[i] == 0) {
 						continue;
 					}
 					auto*       av = a->AsActorValueOwner();
@@ -182,6 +173,7 @@ namespace Plugin
 					}
 				}
 			}
+			actors.clear();  // keeps its room, lets the actors go
 		}
 	}
 

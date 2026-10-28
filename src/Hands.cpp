@@ -21,6 +21,7 @@
 // moment another mod lights that hand.
 // Everything here runs on the main thread, from the player's update.
 
+#include "LightWords.h"
 #include "Plugin.h"
 
 namespace Plugin
@@ -28,11 +29,8 @@ namespace Plugin
 	namespace
 	{
 		constexpr const char*   kNodes[2]{ "NPC L MagicNode [LMag]", "NPC R MagicNode [RMag]" };
-		constexpr const char*   kOwnName = "SpellMasteryHeatLight";
 		constexpr std::uint32_t kKeepFrames = 2;  // a light not seen for this many frames is put back
 		constexpr float         kOwnReach = 160.0f, kOwnFade = 0.9f;
-		constexpr std::uint32_t kInverseSquare = 1u << 10;
-		constexpr float         kK = 3918.88f, kSize = 1.414f;
 
 		struct Seen
 		{
@@ -56,25 +54,6 @@ namespace Plugin
 		std::atomic<float>                          gFactor[2]{ 1.0f, 1.0f };
 
 		RE::ShadowSceneNode* Scene() { return RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0]; }
-
-		// Community Shaders' inverse square lights: its own shader, or (Bottled Shaders 1.0.10 and later, which dropped that
-		// file) Light Limit Fix's attenuation reading each light's InverseSquare flag - Illuminated's Lighting.cpp reads both
-		bool Isl()
-		{
-			static const bool isl = [] {
-				std::error_code ec;
-				if (std::filesystem::exists("Data/Shaders/InverseSquareLighting/InverseSquareLighting.hlsli", ec)) {
-					return true;
-				}
-				std::ifstream in("Data/Shaders/LightLimitFix/Attenuation.hlsli", std::ios::binary);
-				if (!in) {
-					return false;
-				}
-				const std::string text{ std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>() };
-				return text.find("InverseSquare") != std::string::npos;
-			}();
-			return isl;
-		}
 
 		void Restore(Seen& a_seen)
 		{
@@ -162,9 +141,9 @@ namespace Plugin
 				if (!scene || !light) {
 					return;
 				}
-				light->name = kOwnName;
+				light->name = LightWords::kHandGlow;
 				auto& data = light->GetLightRuntimeData();
-				data.radius = { kOwnReach, kOwnReach, kSize };
+				data.radius = { kOwnReach, kOwnReach, LightWords::kSize };
 				light->SetLightAttenuation(kOwnReach);
 				a_node->AttachChild(light.get(), true);
 				RE::NiUpdateData update{};
@@ -197,9 +176,8 @@ namespace Plugin
 			data.fade = fade;
 			data.radius.x = reach;
 			data.radius.y = reach;
-			if (Isl()) {
-				data.ambient.red = std::bit_cast<float>(std::bit_cast<std::uint32_t>(data.ambient.red) | kInverseSquare);
-				data.ambient.green = std::clamp(kK * fade / (reach * reach + kSize * kSize), 0.01f, 0.99f);
+			if (LightWords::InverseSquare()) {
+				LightWords::Write(a_own.light.get(), fade, reach);
 			}
 		}
 
@@ -250,6 +228,11 @@ namespace Plugin
 		RE::NiNode* ThirdPersonMagicNode(RE::PlayerCharacter* a_player, std::size_t a_hand) { return MagicNodeOf(a_player, a_hand, 1); }
 	}
 
+	RE::NiNode* HandLightNode(RE::PlayerCharacter* a_player, std::size_t a_hand)
+	{
+		return a_player && a_hand < 2 ? ThirdPersonMagicNode(a_player, a_hand) : nullptr;
+	}
+
 	void UpdateHands(Heat::Stage a_left, Heat::Stage a_right, const Settings& a_s)
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
@@ -267,7 +250,8 @@ namespace Plugin
 			std::size_t others = 0;
 			for (auto* node : nodes) {
 				RE::BSVisit::TraverseScenegraphLights(node, [&](RE::NiPointLight* a_light) {
-					if (a_light && a_light->name != kOwnName) {
+					// ours (the glow, the cast's afterglow) neither count as another mod's light nor are scaled
+					if (a_light && a_light->name != LightWords::kHandGlow && a_light->name != LightWords::kClash) {
 						Scale(a_light, factor);
 						++others;
 					}

@@ -79,12 +79,19 @@ namespace Plugin
 		{
 			const auto handle = SKSE::GetPluginHandle();
 			const auto r = gApi->RequestSpecialResourceBarsControl(handle);
+			auto       registered = APIResult::NotOwner;
 			if (r == APIResult::OK || r == APIResult::AlreadyGiven) {
-				gOwned = gApi->RegisterSpecialResourceFunctions(handle, TRUEHUD_API::SpecialResourceCallback(Current), TRUEHUD_API::SpecialResourceCallback(Most), true) ==
-				         APIResult::OK;
+				// special mode off: in it TrueHUD reads the most as the bar's resting value, and ours rests at 0 (empty)
+				registered = gApi->RegisterSpecialResourceFunctions(handle, TRUEHUD_API::SpecialResourceCallback(Current),
+					TRUEHUD_API::SpecialResourceCallback(Most), false);
+				gOwned = registered == APIResult::OK;
+				if (!gOwned) {
+					gApi->ReleaseSpecialResourceBarControl(handle);  // given control but not the bar: hand it back
+				}
 			}
 			if (gOwned || r != APIResult::AlreadyTaken || !gTakenLogged) {
-				SKSE::log::info("TrueHUD's special bar: {}", gOwned ? "the Overdrive bar" : "held by another mod - left to it, asked again every 10 s");
+				SKSE::log::info("TrueHUD's special bar: {} (asked: {}, registered: {})",
+					gOwned ? "the Overdrive bar" : "not ours - asked again every 10 s", static_cast<int>(r), static_cast<int>(registered));
 				gTakenLogged = !gOwned;
 			}
 		}
@@ -156,4 +163,6 @@ namespace Plugin
 	}
 
 	TrueHudState TrueHudNow() { return static_cast<TrueHudState>(gState.load()); }
+
+	std::uint32_t HeatColor(const MeterView& a_v) { return ColorOf(a_v); }
 }

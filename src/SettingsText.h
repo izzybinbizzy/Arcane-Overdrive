@@ -37,8 +37,10 @@ namespace Plugin
 	};
 	inline constexpr Visual        kVisuals[]{ { "SpellGrowth", false }, { "ImpactsGrow", false }, { "RedZoneWild", false }, { "OverdriveFocus", false },
 		{ "FocusFlare", false }, { "RedSparks", false }, { "BurnoutFlicker", false }, { "Marks", false }, { "HandGlow", false },
-		{ "LightGrowth", false }, { "ClashDesigns", true }, { "ClashLight", true }, { "ParticleLights", true } };
-	inline constexpr std::uint32_t kPerformanceDefault = (1u << 1) | (1u << 4) | (1u << 5) | (1u << 10) | (1u << 11) | (1u << 12);
+		{ "LightGrowth", false }, { "HandEmbers", false }, { "HandAfterglow", false }, { "HitAfterglow", false }, { "Smoulder", false },
+		{ "ClashDesigns", true }, { "ClashLight", true }, { "ParticleLights", true } };
+	inline constexpr std::uint32_t kPerformanceDefault = (1u << 1) | (1u << 4) | (1u << 5) | (1u << 10) | (1u << 11) | (1u << 12) | (1u << 13) |
+	                                                     (1u << 14) | (1u << 15) | (1u << 16);
 
 	struct Settings
 	{
@@ -60,6 +62,10 @@ namespace Plugin
 		bool          focusFlare{ true };         // ... and motes rush into each casting hand and flare there (Overload.cpp)
 		bool          redSparks{ true };          // in the red zone the hands spit sparks now and then
 		bool          burnoutFlicker{ true };     // the cooldown makes the spells sputter out
+		bool          handEmbers{ true };         // after heavy casting embers / frost / sparks keep falling off the hands a while (Overload.cpp)
+		bool          handAfterglow{ true };      // ... and the hand's light fades out slowly instead of going off
+		bool          hitAfterglow{ true };       // where a spell hits, its light fades out slowly
+		bool          smoulder{ true };           // whoever a spell hits smoulders a moment (smoke, frost, sparks)
 		bool          arcHeat{ false };           // both bars as Reticle Arcs arcs too (Arcs.cpp)
 		bool          marks{ true };              // Overheating fire / frost spells leave scorch / frost marks (Marks.cpp)
 		bool          markHurt{ true };           // ... and they hurt who stands in them
@@ -78,7 +84,8 @@ namespace Plugin
 			       spellGrowth == a_o.spellGrowth &&
 			       growthMax == a_o.growthMax && impactsGrow == a_o.impactsGrow && impactGrowth == a_o.impactGrowth &&
 			       redZoneWild == a_o.redZoneWild && wildness == a_o.wildness && overdriveFocus == a_o.overdriveFocus &&
-			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && arcHeat == a_o.arcHeat && marks == a_o.marks &&
+			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && handEmbers == a_o.handEmbers &&
+			       handAfterglow == a_o.handAfterglow && hitAfterglow == a_o.hitAfterglow && smoulder == a_o.smoulder && arcHeat == a_o.arcHeat && marks == a_o.marks &&
 			       markHurt == a_o.markHurt && markMax == a_o.markMax && markSeconds == a_o.markSeconds && markHurtPerSecond == a_o.markHurtPerSecond &&
 			       counts.healingAndWards == a_o.counts.healingAndWards && counts.stavesAndScrolls == a_o.counts.stavesAndScrolls && enemies == a_o.enemies &&
 			       debugLog == a_o.debugLog && performanceOff == a_o.performanceOff;
@@ -124,6 +131,10 @@ namespace Plugin
 			{ "FocusFlare", [](const Settings& s) { return On(s.focusFlare); }, [](Settings& s, int v) { s.focusFlare = v != 0; } },
 			{ "RedSparks", [](const Settings& s) { return On(s.redSparks); }, [](Settings& s, int v) { s.redSparks = v != 0; } },
 			{ "BurnoutFlicker", [](const Settings& s) { return On(s.burnoutFlicker); }, [](Settings& s, int v) { s.burnoutFlicker = v != 0; } },
+			{ "HandEmbers", [](const Settings& s) { return On(s.handEmbers); }, [](Settings& s, int v) { s.handEmbers = v != 0; } },
+			{ "HandAfterglow", [](const Settings& s) { return On(s.handAfterglow); }, [](Settings& s, int v) { s.handAfterglow = v != 0; } },
+			{ "HitAfterglow", [](const Settings& s) { return On(s.hitAfterglow); }, [](Settings& s, int v) { s.hitAfterglow = v != 0; } },
+			{ "Smoulder", [](const Settings& s) { return On(s.smoulder); }, [](Settings& s, int v) { s.smoulder = v != 0; } },
 			{ "Marks", [](const Settings& s) { return On(s.marks); }, [](Settings& s, int v) { s.marks = v != 0; } },
 			{ "MarkHurt", [](const Settings& s) { return On(s.markHurt); }, [](Settings& s, int v) { s.markHurt = v != 0; } },
 			{ "Bar", [](const Settings& s) { return On(s.bar); }, [](Settings& s, int v) { s.bar = v != 0; } },
@@ -235,9 +246,13 @@ namespace Plugin
 			{ "PerformanceMarks", PerfGet<7>, PerfSet<7>, "Performance", "1: ... the scorch and frost marks" },
 			{ "PerformanceHandGlow", PerfGet<8>, PerfSet<8>, "Performance", "1: ... the glow in your hands" },
 			{ "PerformanceLightGrowth", PerfGet<9>, PerfSet<9>, "Performance", "1: ... your hand lights growing with the Heat" },
-			{ "PerformanceClashDesigns", PerfGet<10>, PerfSet<10>, "Performance", "1: ... the clashes' own effects (the bursts stay)" },
-			{ "PerformanceClashLight", PerfGet<11>, PerfSet<11>, "Performance", "1: ... the light a clash casts" },
-			{ "PerformanceParticleLights", PerfGet<12>, PerfSet<12>, "Performance", "1: ... the particle lights of a clash's flying pieces" },
+			{ "PerformanceHandEmbers", PerfGet<10>, PerfSet<10>, "Performance", "1: ... the embers falling off your hands after heavy casting" },
+			{ "PerformanceHandAfterglow", PerfGet<11>, PerfSet<11>, "Performance", "1: ... your hand lights fading out slowly" },
+			{ "PerformanceHitAfterglow", PerfGet<12>, PerfSet<12>, "Performance", "1: ... the light fading out where your spells hit" },
+			{ "PerformanceSmoulder", PerfGet<13>, PerfSet<13>, "Performance", "1: ... whoever your spells hit smouldering a moment" },
+			{ "PerformanceClashDesigns", PerfGet<14>, PerfSet<14>, "Performance", "1: ... the clashes' own effects (the bursts stay)" },
+			{ "PerformanceClashLight", PerfGet<15>, PerfSet<15>, "Performance", "1: ... the light a clash casts" },
+			{ "PerformanceParticleLights", PerfGet<16>, PerfSet<16>, "Performance", "1: ... the particle lights of a clash's flying pieces" },
 
 			{ "DebugLog", [](const Settings& s) { return On(s.debugLog); }, [](Settings& s, int v) { s.debugLog = v != 0; }, "Debug",
 				"1: each cast, the bars after it and each release of Overdrive go into SpellMasteryHeat.log" },

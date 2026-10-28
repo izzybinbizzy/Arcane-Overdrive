@@ -2,14 +2,15 @@
 // Copyright (C) 2026 izzydoingit
 // GPL-3.0-or-later; see LICENSE.txt and the notice at the top of main.cpp.
 //
-// Spell struggles, on the game's main thread, inside the pass (Clash.cpp). Two hostile streams - sprays, held beams,
+// Spell struggles, on the game's main thread, inside the pass (ClashPass.cpp). Two hostile streams - sprays, held beams,
 // breath - that meet lock together, and the stronger caster pushes the meeting point back until it breaks through.
 // Core decides everything that can be decided without the game (who may lock, how hard each side pushes, the contest
 // over time, where the meeting point is); this file reads the actors, feeds Core, and carries out what each step says:
-// particles past the meeting point are snuffed, a locked beam is cut short there, the loser pays magicka for being
+// a locked beam or spray is cut short at the meeting point (a spray's hits past it dropped), the loser pays magicka for being
 // pushed back, and a breakthrough breaks the loser's cast, staggers and hurts them.
 
 #include "ClashShared.h"
+#include "Plugin.h"
 #include "Translation.h"
 
 #include "CrossfireAPI.h"
@@ -56,7 +57,7 @@ namespace Crossfire
 		std::unordered_map<std::uint64_t, Rec>      gRecs;
 		std::unordered_map<std::uint32_t, BeamHold> gBeams;
 		// a locked spray's reach and where the spray stood, both taken on the main thread - read by the FlameProjectile hit
-		// hook, which may run off it and so never reads the projectile itself
+		// hook, which may run off it: it reads only the projectile's handle, never its fields
 		struct FlameCut
 		{
 			float      reach{ 0.0f };
@@ -64,12 +65,14 @@ namespace Crossfire
 		};
 		std::mutex                                                  gFlameCutLock;
 		std::unordered_map<std::uint32_t, FlameCut>                 gFlameCut;
-		std::unordered_set<std::uint64_t>                           gTried;  // pairs that may not lock this frame
-		std::unordered_map<std::uint32_t, std::vector<std::size_t>> gBy;     // shooter -> its streams this frame
+		std::atomic<std::size_t>                                    gFlameCuts{ 0 };  // gFlameCut's size, read by the hooks first
+		std::unordered_set<std::uint64_t>                           gTried;           // pairs that may not lock this frame
+		std::unordered_map<std::uint32_t, std::vector<std::size_t>> gBy;              // shooter -> its streams this frame
 		std::span<const StreamRef>                                  gStreams;
 		std::uint64_t                                               gEngagements = 0;
 		std::uint32_t                                               gFrame = 0;
 		double                                                      gClock = 0.0;
+		Heat::Meter::State                                          gMyState{ Heat::Meter::State::kBuilding };  // the player's bar last frame
 		std::mutex                                                  gViewLock;
 		StruggleView                                                gView;
 
@@ -149,7 +152,9 @@ namespace Crossfire
 		[[nodiscard]] float ReachOf(const StreamRef& a_s)
 		{
 			if (a_s.info->stream == Core::Stream::kBeam) {
-				const float r = a_s.projectile->GetProjectileRuntimeData().range;
+				// a locked beam's range is the cut Enforce wrote at the front: its reach is the range it had before
+				const auto  held = gBeams.find(a_s.native);
+				const float r = held != gBeams.end() ? held->second.range0 : a_s.projectile->GetProjectileRuntimeData().range;
 				return Core::StreamReach(std::isfinite(r) && r > 0.0f ? r : a_s.base->data.range, 0.0f, 0.0f);
 			}
 			return Core::StreamReach(a_s.base->data.range, a_s.base->data.speed, a_s.base->data.lifetime);
@@ -248,7 +253,7 @@ namespace Crossfire
 					out.leading = &s;
 				}
 			}
-			out.twoHands = (sources[0] ? 1 : 0) + (sources[1] ? 1 : 0) + (sources[2] ? 1 : 0) >= 2;
+			out.twoHands = sources[0] && sources[1];  // the left and the right hand; the voice is no hand
 			return out;
 		}
 
@@ -537,7 +542,7 @@ namespace Crossfire
 			}
 		}
 
-		// snuff each side's particles past the front, and cut its beams there
+		// cut each side's beams and sprays at the front
 		void Enforce(const Core::Struggle& a_s, const Core::Front& a_front, const Core::Config& a_cfg)
 		{
 			if (!a_front.valid) {
@@ -550,38 +555,33 @@ namespace Crossfire
 				}
 				for (const auto i : it->second) {
 					const auto& s = gStreams[i];
-					// a spray (Flames, Frostbite, a breath) is ONE long-lived FlameProjectile at the hand that reaches out to
-					// its range, so the particle test below never found it past the front and the foe's spray still burned
-					// through a lock. It is cut at the front like a beam.
-					if (s.info->stream == Core::Stream::kBeam || s.projectile->GetFormType() == RE::FormType::ProjectileFlame) {
-						if (!a_cfg.struggle.beamsStop) {
-							continue;
-						}
-						auto& rd = s.projectile->GetProjectileRuntimeData();
-						auto [h, fresh] = gBeams.try_emplace(s.native);
-						if (fresh) {
-							h->second.handle = s.handle;
-							h->second.range0 = std::isfinite(rd.range) && rd.range > 0.0f ? rd.range : s.base->data.range;
-						}
-						const float cut = Core::BeamCut(a_front, s.now, s.dir, h->second.range0);
-						if (std::isfinite(cut) && cut > 0.0f) {
-							rd.range = cut;
-							// measured with two AI mages locked 9.9 s: both kept losing health through the whole lock - a
-							// FlameProjectile does not honour a range written after launch.
-							// Its hits are dropped past the cut instead (FlameAddImpact, main.cpp's hook)
-							if (s.projectile->GetFormType() == RE::FormType::ProjectileFlame) {
-								std::scoped_lock lock(gFlameCutLock);
-								gFlameCut.insert_or_assign(s.native, FlameCut{ cut, s.now });
-							}
-						}
-						h->second.held = true;
+					// every stream that locks is a beam or a spray, and a spray (Flames, Frostbite, a breath) is ONE long-lived
+					// FlameProjectile at the hand that reaches out to its range (ClashClassify: ProjectileFlame -> kStream), so
+					// both are cut at the front
+					const bool flame = s.projectile->GetFormType() == RE::FormType::ProjectileFlame;
+					// BeamsStop is about beams only; a spray is always stopped at the front
+					if (!flame && !a_cfg.struggle.beamsStop) {
 						continue;
 					}
-					// a particle measured from its own side's muzzle: A's past the front, B's short of it
-					const Core::Front& f = a_front;
-					if (Core::PastFront(f, sideA, s.now, s.radius)) {
-						Snuff(s.entry);
+					auto& rd = s.projectile->GetProjectileRuntimeData();
+					auto [h, fresh] = gBeams.try_emplace(s.native);
+					if (fresh) {
+						h->second.handle = s.handle;
+						h->second.range0 = std::isfinite(rd.range) && rd.range > 0.0f ? rd.range : s.base->data.range;
 					}
+					const float cut = Core::BeamCut(a_front, s.now, s.dir, h->second.range0);
+					if (std::isfinite(cut) && cut > 0.0f) {
+						rd.range = cut;
+						// measured with two AI mages locked 9.9 s: both kept losing health through the whole lock - a
+						// FlameProjectile does not honour a range written after launch.
+						// Its hits are dropped past the cut instead (FlameAddImpact, main.cpp's hook)
+						if (flame) {
+							std::scoped_lock lock(gFlameCutLock);
+							gFlameCut.insert_or_assign(s.native, FlameCut{ cut, s.now });
+							gFlameCuts = gFlameCut.size();
+						}
+					}
+					h->second.held = true;
 				}
 			}
 		}
@@ -600,6 +600,7 @@ namespace Crossfire
 				{
 					std::scoped_lock lock(gFlameCutLock);
 					gFlameCut.erase(it->first);
+					gFlameCuts = gFlameCut.size();
 				}
 				it = gBeams.erase(it);
 			}
@@ -632,6 +633,10 @@ namespace Crossfire
 				v.balance = meA ? s.balance : -s.balance;  // + : pushing toward them (A pushes toward +1)
 				v.lead = meA ? s.lead : -s.lead;
 				v.seconds = s.age;
+				v.shoveAge = s.shoveAge;
+				v.shoveOnBeat = s.shoveOnBeat;
+				v.myColor = mine.leading.light.value_or(Core::LookTint(mine.leading.look));
+				v.theirColor = theirs.leading.light.value_or(Core::LookTint(theirs.leading.look));
 				v.mine = static_cast<std::uint8_t>(mine.leading.element);
 				v.theirs = static_cast<std::uint8_t>(theirs.leading.element);
 				v.myBreath = mine.breath;
@@ -670,7 +675,7 @@ namespace Crossfire
 
 		bool FlameLocked(RE::Projectile* a_flame)
 		{
-			if (!a_flame) {
+			if (!a_flame || gFlameCuts.load() == 0) {
 				return false;
 			}
 			const auto       native = RE::ProjectileHandle(a_flame).native_handle();
@@ -680,7 +685,7 @@ namespace Crossfire
 
 		bool FlameHitPastFront(RE::Projectile* a_flame, const RE::NiPoint3& a_at)
 		{
-			if (!a_flame) {
+			if (!a_flame || gFlameCuts.load() == 0) {
 				return false;
 			}
 			const auto native = RE::ProjectileHandle(a_flame).native_handle();
@@ -705,6 +710,7 @@ namespace Crossfire
 			{
 				std::scoped_lock lock(gFlameCutLock);
 				gFlameCut.clear();
+				gFlameCuts = 0;
 			}
 			gBook.Clear();
 			gRecs.clear();
@@ -727,6 +733,8 @@ namespace Crossfire
 			gStreams = a_streams;
 			gFrame = a_frame;
 			gClock += static_cast<double>(a_delta);
+			// a shooter seen last frame keeps its list for reuse; one not seen is forgotten, so the map never grows
+			std::erase_if(gBy, [](const auto& a_entry) { return a_entry.second.empty(); });
 			for (auto& [who, list] : gBy) {
 				list.clear();
 			}
@@ -737,15 +745,32 @@ namespace Crossfire
 
 			auto*                      player = RE::PlayerCharacter::GetSingleton();
 			const Vec3                 me = player ? V(player->GetPosition()) : Vec3{};
+			const auto                 meHandle = player ? player->GetHandle().native_handle() : 0;
 			const float                maxDistance = a_cfg.maxDistance;
 			std::vector<std::uint64_t> gone;
+			// Overdrive Breakpoint: the player's Overdrive released this frame (the meters ran just before this pass)
+			const auto mine = Plugin::PlayerView();
+			const bool released = mine.state == Heat::Meter::State::kOverdrive && gMyState != Heat::Meter::State::kOverdrive;
+			gMyState = mine.state;
 			for (auto& [key, s] : gBook) {
 				auto rit = gRecs.find(key);
 				if (rit == gRecs.end()) {
-					s.phase = Core::Phase::kCooldown;  // cannot happen; let it run out
+					gone.push_back(key);  // cannot happen; forget it
 					continue;
 				}
-				Rec&         r = rit->second;
+				Rec& r = rit->second;
+				if (released && meHandle && s.phase == Core::Phase::kLocked && (s.a == meHandle || s.b == meHandle)) {
+					if (const float shove = Core::Breakpoint(s, s.a == meHandle, mine.timer, sc); shove > 0.0f) {
+						if (const auto f = Core::FrontOf(s); f.valid) {
+							BurstFor(s.a, s.b, f.point, key, a_cfg);
+							Shake(0.4f + shove, me, 0.4f, a_cfg);
+						}
+						StruggleEvent(s.shoveOnBeat ? "breakpoint on the beat" : "breakpoint", r.a.name, r.b.name, s.balance, s.age);
+						if (a_cfg.debugLog) {
+							SKSE::log::info("Overdrive Breakpoint: the lock shoved {:.2f}{} at {:.1f} s", shove, s.shoveOnBeat ? " (on the beat)" : "", s.age);
+						}
+					}
+				}
 				auto         actorA = ActorOf(r.a.ref);
 				auto         actorB = ActorOf(r.b.ref);
 				Core::Sight  sight;

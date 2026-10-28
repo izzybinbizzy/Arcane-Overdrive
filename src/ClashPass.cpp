@@ -11,6 +11,7 @@
 // Everything the game gives us is checked before it is used; anything odd is simply left out of the frame.
 
 #include "ClashShared.h"
+#include "Guarded.h"
 
 #include "CrossfireAPI.h"
 
@@ -88,7 +89,7 @@ namespace Crossfire
 		std::vector<Entry>                gEntries;
 		std::vector<Core::Body>           gBodies;
 		std::vector<Core::Contact>        gContacts;
-		std::vector<StreamRef>            gStreams;  // this frame's lockable streams, for Struggle.cpp
+		std::vector<StreamRef>            gStreams;  // this frame's lockable streams, for ClashStruggle.cpp
 		Core::Limiter                     gBursts, gXP, gEvents;
 		std::uint32_t                     gFrame = 0;
 		double                            gClock = 0.0;  // game seconds since the game started; never goes back
@@ -355,7 +356,7 @@ namespace Crossfire
 		}
 
 		// once a frame: the designs whose meshes have arrived take their spell's color, their ground and their light; one still
-		// empty after a second is let go
+		// empty after 60 frames is let go
 		void ArtArrived(const Core::Config& a_cfg)
 		{
 			static const RE::BSFixedString ground{ "ClashGround" };
@@ -428,14 +429,16 @@ namespace Crossfire
 		}
 
 		// true when it burst where it went
-		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg)
+		// a_also: the other projectile's look, when it dies in the same clash (one burst shows both designs)
+		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg,
+			const Info* a_also = nullptr)
 		{
 			auto* p = a_e.ref.get();
 			if (a_e.ghost || !p) {
 				return false;  // a bolt's line kept after its projectile went: immune, nothing to change
 			}
 			if (a_kill) {
-				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg);
+				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg, a_also);
 				p->Kill();
 				a_e.killed = true;
 				gKilled.insert_or_assign(a_e.handle, gClock);
@@ -534,12 +537,15 @@ namespace Crossfire
 	{
 		const auto& cfg = Live();
 		UpdateLights(std::isfinite(a_delta) ? a_delta : 0.0f);
-		if (!cfg.enabled || !std::isfinite(a_delta) || a_delta <= 0.0f) {
+		if (!cfg.enabled) {
 			if (!gTracks.empty() || Struggles::Active()) {
 				Struggles::Reset(true);  // held beams get their range back first, while their handles still mean something
-				Reset();                 // off, or time stood still: whatever we remembered is stale when it moves again
+				Reset();                 // off: whatever we remembered is stale when it is switched on again
 			}
 			return;
+		}
+		if (!std::isfinite(a_delta) || a_delta <= 0.0f) {
+			return;  // time stood still this frame: nothing moved, so nothing is judged
 		}
 		a_delta = std::min(a_delta, 0.25f);
 		++gFrame;
@@ -853,9 +859,13 @@ namespace Crossfire
 						c.touch.point.y, c.touch.point.z);
 				}
 				Tell(a, b, o, c.touch.point, pair, cfg);
+				ClashEvent(Core::ElementName(a.info.element), Core::ElementName(b.info.element), !a.ghost, !b.ghost, a.player || b.player);
 				if (cfg.explosions) {
-					Entry* live = !a.ghost && a.ref ? &a : (!b.ghost && b.ref ? &b : nullptr);
-					if (ShowBurst(live ? live->ref.get() : nullptr, live ? live->base : a.base, a.info, c.touch.point, pair, cfg, &b.info)) {
+					// the burst is the live projectile's own; the other's look rides with it
+					const Entry* live = !a.ghost && a.ref ? &a : (!b.ghost && b.ref ? &b : nullptr);
+					const Entry& shown = live ? *live : a;
+					const Entry& other = &shown == &a ? b : a;
+					if (ShowBurst(live ? live->ref.get() : nullptr, shown.base, shown.info, c.touch.point, pair, cfg, &other.info)) {
 						ShowPair(a.info, b.info, c.touch.point, live ? live->ref.get() : nullptr, cfg);
 					}
 				}
@@ -889,8 +899,9 @@ namespace Crossfire
 			}
 			Tell(a, b, o, c.touch.point, pair, cfg);  // before Settle: it reads the strengths as they were
 			RE::Projectile* at = !a.ghost && a.ref ? a.ref.get() : (!b.ghost && b.ref ? b.ref.get() : nullptr);
-			const bool      burstA = Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg);
-			const bool      burstB = Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg);
+			// both destroyed: the first burst carries both designs - the burst limiter would hold the second back
+			const bool burstA = Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg, o.killB ? &b.info : nullptr);
+			const bool burstB = Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg, o.killA ? &a.info : nullptr);
 			if (burstA || burstB) {
 				ShowPair(a.info, b.info, c.touch.point, at, cfg);
 			}
@@ -951,20 +962,24 @@ namespace Crossfire
 			}
 		}
 		auto* tasks = SKSE::GetTaskInterface();
-		if (!look || (!a_pair.empty() && !PairArt(a_pair)) || !tasks || !std::isfinite(a_ahead) || !std::isfinite(a_up)) {
+		// the art is looked up at data load: until then (and for a look or pair with no mesh) there is nothing to show
+		if (!look || !ClashArtReady() || !tasks || !std::isfinite(a_ahead) || !std::isfinite(a_up) ||
+			!(a_pair.empty() ? ClashArt(*look) : PairArtFor(*look, a_pair, a_pair == "Resonance"))) {
 			return false;
 		}
 		tasks->AddTask([look = *look, pair = std::string(a_pair), a_color, a_ahead, a_up]() {
-			auto* player = RE::PlayerCharacter::GetSingleton();
-			if (!player) {
-				return;
-			}
-			const float      heading = player->GetAngleZ();
-			const auto       p = player->GetPosition();
-			const Core::Vec3 at{ p.x + a_ahead * std::sin(heading), p.y + a_ahead * std::cos(heading), p.z + a_up };
-			const char*      art = pair.empty() ? ClashArt(look) : PairArtFor(look, pair, pair == "Resonance");
-			Arrive(ModelHere(art, at, 1.0f, nullptr, heading), a_color ? a_color : std::optional(Core::LookTint(look)), (std::max)(-a_up, -400.0f), 1.0f,
-				pair.empty());
+			Safe::Guarded("a design shown for DevBench", [&] {
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!player) {
+					return;
+				}
+				const float      heading = player->GetAngleZ();
+				const auto       p = player->GetPosition();
+				const Core::Vec3 at{ p.x + a_ahead * std::sin(heading), p.y + a_ahead * std::cos(heading), p.z + a_up };
+				const char*      art = pair.empty() ? ClashArt(look) : PairArtFor(look, pair, pair == "Resonance");
+				Arrive(ModelHere(art, at, 1.0f, nullptr, heading), a_color ? a_color : std::optional(Core::LookTint(look)), (std::max)(-a_up, -400.0f),
+					1.0f, pair.empty());
+			});
 		});
 		return true;
 	}

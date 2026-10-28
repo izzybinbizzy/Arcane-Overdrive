@@ -296,8 +296,9 @@ namespace Crossfire
 	{
 		RE::SpellItem*                                 gFear = nullptr;
 		std::array<RE::BGSExplosion*, Core::kElements> gStandIn{};
-		std::array<std::string, Core::kLooks>          gClashArt{};  // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
-		std::unordered_map<std::string, std::string>   gPairArt;     // a pair's name -> its mesh, when there is one
+		std::array<std::string, Core::kLooks>          gClashArt{};         // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
+		std::unordered_map<std::string, std::string>   gPairArt;            // a pair's name -> its mesh, when there is one
+		std::atomic<bool>                              gArtReady{ false };  // FindClashArt has run (DevBench may ask before)
 	}
 
 	// For each element, the burst a clash shows for a spell that has none of its own (Firebolt, Ice Spike, Lightning
@@ -382,7 +383,10 @@ namespace Crossfire
 				gPairArt.emplace(key, std::move(art));
 			}
 		}
+		gArtReady = true;
 	}
+
+	bool ClashArtReady() { return gArtReady.load(); }
 
 	const char* ClashArt(Core::Look a_look)
 	{

@@ -43,8 +43,9 @@ namespace Plugin
 	void Frame(float a_delta);                                      // main thread, every frame, from the player's update
 	struct FrameCost
 	{
-		float usAvg{ 0.0f }, usMax{ 0.0f };  // Frame's own time on the main thread, microseconds (about the last 20 frames; the worst since reset)
+		float usAvg{ 0.0f }, usMax{ 0.0f };  // the whole mod's time a frame on the main thread, microseconds (about the last 20 frames; the worst since the game was loaded)
 	};
+	void                    NoteFrameCost(float a_us);  // main thread: the meters' and the clashes' time this frame
 	[[nodiscard]] FrameCost FrameCostNow();
 	void                    ResetFrameCost();
 	[[nodiscard]] float     Multiplier(RE::Actor* a_caster, const RE::MagicItem* a_item, const RE::EffectSetting* a_effect);  // any thread
@@ -91,12 +92,18 @@ namespace Plugin
 	void                       UpdateTrueHud(const MeterView& a_v, const Settings& a_s);  // main thread, every frame
 	void                       ForgetTrueHud();                                           // a game is loading
 	[[nodiscard]] TrueHudState TrueHudNow();
+	// the Overdrive bar's color for the Heat now, 0xRRGGBB - TrueHUD's bar and the struggle bar's Overdrive ring wear it
+	[[nodiscard]] std::uint32_t HeatColor(const MeterView& a_v);
 
 	// ------------------------------------------------------------------ Overload.cpp: the overcharge on the spells themselves
 	void                UpdateOverload(const MeterView& a_v, const Settings& a_s, float a_dt);  // main thread, every frame, before the hands
 	void                ReleaseOverload();                                                      // every art and projectile back as it was found
 	[[nodiscard]] float HandLightFactor(std::size_t a_hand);                                    // 1, or a dim ember while that hand's spell sputters out
 	void                NoteSpawned(RE::TESObjectREFR* a_ref);                                  // any thread: an explosion or hazard was just made (the hooks)
+	void                NoteHit(RE::Actor* a_target, RE::FormID a_source);                      // any thread: the player's spell a_source hit a_target (the hit event)
+	// main thread: the player's spell projectiles in the world, gathered once a frame on the first ask (Overload, Marks)
+	[[nodiscard]] const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellsNow(RE::PlayerCharacter* a_player);
+	void                                                            ReleaseSpellsNow();  // the end of the frame: they are let go
 	struct OverloadView
 	{
 		float         power{ 1.0f };                          // the spells' size now (Overload::Growth, eased; the focus pull not in it)
@@ -107,6 +114,8 @@ namespace Plugin
 		std::uint32_t explosions{ 0 }, hazards{ 0 };          // ours grown since the game was loaded
 		std::uint32_t flares{ 0 }, sparks{ 0 };               // focus flares and red-zone sparks played since the game was loaded
 		std::uint32_t effectModels{ 0 };                      // of our 8 effect models, how many were found
+		std::uint32_t embers{ 0 }, afterglows{ 0 };           // the lingering effects played since the game was loaded: hand embers,
+		std::uint32_t hitGlows{ 0 }, smoulders{ 0 };          // hand afterglows, hit afterglows, smoulders
 	};
 	[[nodiscard]] OverloadView OverloadNow();
 
@@ -122,6 +131,9 @@ namespace Plugin
 	// ------------------------------------------------------------------ Hands.cpp: the lights on the casting hands
 	void UpdateHands(Heat::Stage a_left, Heat::Stage a_right, const Settings& a_settings);  // main thread
 	void ReleaseHands();                                                                    // every light back as we found it, our own taken down
+	// main thread: where a light of ours on a hand hangs in both views - the third-person body's magic node (a light under the
+	// first-person skeleton lights nothing in the world on ENB / Vanilla)
+	[[nodiscard]] RE::NiNode* HandLightNode(RE::PlayerCharacter* a_player, std::size_t a_hand);
 	struct HandsView
 	{
 		std::size_t scaled{ 0 }, frozen{ 0 }, own{ 0 };

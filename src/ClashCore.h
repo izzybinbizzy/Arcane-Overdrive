@@ -415,6 +415,8 @@ namespace Crossfire::Core
 	inline constexpr float kMinLead = 0.15f;      // the least lead of the more skilled caster when skill always wins
 	inline constexpr float kSkillPoint = 0.02f;   // a point of skill over the other is 2% more push (at weight 1)
 	inline constexpr float kLevelPoint = 0.02f;   // and a level, 2%
+	inline constexpr float kKnotBeat = 1.2f;      // seconds between the meeting point's pulses on the struggle bar, from the lock
+	inline constexpr float kOnBeat = 0.15f;       // an Overdrive released this close to a pulse is on the beat
 
 	// One side's pusher, read from the live actor every frame. A field that is not finite counts as its default here.
 	struct Caster
@@ -444,8 +446,9 @@ namespace Crossfire::Core
 	// How much A outpushes B, -1..1: (Pa - Pb) / (Pa + Pb), so a caster twice as strong leads by 1/3. Exactly the negative
 	// of B's over A. With SkillAlwaysWins, when both cast from a school and one has at least a point more skill, that
 	// one leads by at least kMinLead whatever else there is: the rest only changes how fast. a_surge*: surging now.
+	// a_over*: in an Overdrive released during this lock (Overdrive Breakpoint), pushing BreakpointPower times harder.
 	[[nodiscard]] float Advantage(const Caster& a, const Caster& b, const StruggleConfig& a_config, bool a_surgeA = false,
-		bool a_surgeB = false) noexcept;
+		bool a_surgeB = false, bool a_overA = false, bool a_overB = false) noexcept;
 	// the share of the way from the meeting point to a caster's hands the lock moves in a second at a lead of 1
 	[[nodiscard]] float PushRate(const StruggleConfig& a_config) noexcept;
 	// seconds from the lock to the breakthrough at this lead and pace (kBreathPace with a breath, else 1); 1e6 for never
@@ -485,6 +488,9 @@ namespace Crossfire::Core
 		float         timer{ 0.0f };                   // seconds in kBroken or kCooldown
 		float         lead{ 0.0f };                    // the last step's Advantage
 		float         surgeA{ 0.0f }, surgeB{ 0.0f };  // seconds of surge left
+		float         overA{ 0.0f }, overB{ 0.0f };    // seconds left of an Overdrive released during the lock (Breakpoint)
+		float         shoveAge{ -1.0f };               // the lock's age at the last Breakpoint shove, -1 none (the bar's flash)
+		bool          shoveOnBeat{ false };            // that shove came on the beat
 		float         nextSpark{ kSparkEvery };
 		bool          surgedA{ false }, surgedB{ false };  // each side surges once
 		std::uint64_t seed{ 0 };
@@ -526,6 +532,16 @@ namespace Crossfire::Core
 		const StruggleConfig& a_config) noexcept;
 	// the magicka a side pays over `a_dt` for being pushed back `a_towardMe` (0..1) of the way, on top of its spell's
 	[[nodiscard]] float MagickaDrain(float a_towardMe, float a_cost, float a_dt, const StruggleConfig& a_config) noexcept;
+
+	// Overdrive Breakpoint (his pick for the struggle, 2026-10-24): a caster who releases Overdrive during a lock shoves the
+	// meeting point toward the other's hands, harder when released on the bar's pulse, and pushes harder for the burst.
+	// on the beat: within kOnBeat of a pulse of the meeting point, which pulses every kKnotBeat seconds of the lock
+	[[nodiscard]] bool OnTheBeat(float a_age) noexcept;
+	// the shove for a release at this age of the lock, a share of the way (BreakpointShove, times BreakpointBeat on the beat)
+	[[nodiscard]] float BreakpointShove(float a_age, const StruggleConfig& a_config) noexcept;
+	// a_sideA (else B) released Overdrive for a_seconds: the meeting point shoved, the push raised for that long -> the shove
+	// given (0 when Breakpoint is off or the struggle is not locked)
+	float Breakpoint(Struggle& a_struggle, bool a_sideA, float a_seconds, const StruggleConfig& a_config) noexcept;
 
 	// a point measured along the line from one point to another, and how far off that line it is
 	struct AxisPoint
@@ -636,6 +652,10 @@ namespace Crossfire::Core
 		float magickaPressure{ 0.5f };  // times the spell's cost, per second, for the side pushed right back
 		bool  surge{ false };
 		float surgePower{ 1.5f };
+		bool  breakpoint{ true };        // Overdrive released during a lock shoves the meeting point (Overdrive Breakpoint)
+		float breakpointShove{ 0.25f };  // the share of the way it moves
+		float breakpointBeat{ 1.6f };    // times that, released on the meeting point's pulse
+		float breakpointPower{ 2.0f };   // how much harder its caster pushes for the rest of the burst
 		// [Aftermath]
 		bool  breakCast{ true };
 		float breakTime{ 1.5f };  // seconds the overwhelmed caster reels
@@ -651,7 +671,7 @@ namespace Crossfire::Core
 		// [Show]
 		bool  lockBursts{ true };
 		float cameraShake{ 0.4f };
-		bool  bar{ true };
+		bool  bar{ false };        // off by default until its look is approved
 		float barHeight{ 82.0f };  // percent of the way down the screen
 		float barScale{ 1.0f };
 		float barOpacity{ 0.9f };

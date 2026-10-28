@@ -157,7 +157,7 @@ namespace Plugin
 		heat.preview = HeatPreview;
 		const bool tookCharge = arcs->RegisterBar(charge);
 		const bool tookHeat = arcs->RegisterBar(heat);
-		gTaken = tookCharge && tookHeat;
+		gTaken = tookCharge || tookHeat;  // the switch shows whichever it took
 		SKSE::log::info("Reticle Arcs (interface {}): the Overdrive bar {}, the Heat bar {}", arcs->GetVersion(), tookCharge ? "taken" : "refused",
 			tookHeat ? "taken" : "refused (ReticleArcs.log says why)");
 	}

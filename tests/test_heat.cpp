@@ -729,6 +729,8 @@ namespace
 		s.overdriveFocus = false;
 		s.focusFlare = false;
 		s.redSparks = false;
+		s.handEmbers = false;
+		s.smoulder = false;
 		// both files, each with only its own keys; read back together they give every setting
 		std::stringstream menu, advanced;
 		SettingsText::WriteMenu(menu, s);
@@ -813,7 +815,7 @@ namespace
 		CHECK(!SettingsText::PresetOf(aedra).has_value());
 
 		// the Visual preset: Full turns every effect on; Performance turns off what [Performance] names (by default the costly ones)
-		CHECK(std::size(kVisuals) == 13 && !kVisuals[9].clash && kVisuals[10].clash && kVisuals[12].clash);
+		CHECK(std::size(kVisuals) == 17 && !kVisuals[13].clash && kVisuals[14].clash && kVisuals[16].clash);
 		for (const auto& v : kVisuals) {
 			Settings probe;
 			CHECK(v.clash || SettingsText::Apply(probe, v.key, 0));  // every switch of this file is a real key
@@ -823,6 +825,7 @@ namespace
 		Settings vis;
 		SettingsText::ApplyVisuals(vis, true);
 		CHECK(!vis.impactsGrow && !vis.focusFlare && !vis.redSparks && vis.spellGrowth && vis.marks && vis.handGlow && vis.lightGrowth);
+		CHECK(!vis.handEmbers && !vis.handAfterglow && !vis.hitAfterglow && !vis.smoulder);  // the lingering effects are Performance's too
 		CHECK(SettingsText::ClashVisuals(vis, true) == kAllOff);
 		CHECK(SettingsText::VisualsOf(vis, kAllOff) == std::optional<int>{ 1 });
 		CHECK(!SettingsText::VisualsOf(vis, std::array<bool, 3>{ true, false, false }).has_value());  // one turned back on: Custom

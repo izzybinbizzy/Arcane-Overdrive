@@ -4,11 +4,15 @@
 
 #include "ClashCore.cpp"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
+#include <limits>
+#include <numbers>
 #include <random>
 #include <set>
 #include <string>
@@ -945,7 +949,7 @@ namespace
 			keys.insert(key);
 			++written;
 		}
-		CHECK(written == 88);  // 33 before the struggles (2 of them head on, 3 the designs' light), 46 of them, 9 of auto lock
+		CHECK(written == 92);  // 33 before the struggles (2 of them head on, 3 the designs' light), 50 of them (4 Breakpoint), 9 of auto lock
 		CHECK(keys.size() == written);
 		const Range push = RangeOf("PushTime"), scale = RangeOf("barscale"), source = RangeOf("SkillSource");
 		CHECK(push.lo == 1.0f && push.hi == 30.0f);
@@ -1539,6 +1543,68 @@ namespace
 		StruggleConfig surge;
 		surge.surgePower = 2;
 		NEAR(Advantage(Mage(50), Mage(50), surge, true, false), 1.0f / 3.0f, 1e-5);
+		// so does an Overdrive released during the lock, by BreakpointPower (2 by default); both on is even again
+		NEAR(Advantage(Mage(50), Mage(50), k, false, false, true, false), 1.0f / 3.0f, 1e-5);
+		CHECK(Advantage(Mage(50), Mage(50), k, false, false, true, true) == 0.0f);
+	}
+
+	// Overdrive Breakpoint: the shove on and off the meeting point's pulse, the push for the burst, and its switch
+	void TestBreakpoint()
+	{
+		const StruggleConfig k;
+		const float          nan = std::numeric_limits<float>::quiet_NaN();
+		CHECK(OnTheBeat(0.0f) && OnTheBeat(kKnotBeat) && OnTheBeat(kKnotBeat * 3.0f - 0.1f) && OnTheBeat(kKnotBeat * 2.0f + kOnBeat * 0.9f));
+		CHECK(!OnTheBeat(kKnotBeat * 0.5f) && !OnTheBeat(kKnotBeat + kOnBeat + 0.01f) && !OnTheBeat(-1.0f) && !OnTheBeat(nan));
+		NEAR(BreakpointShove(kKnotBeat * 0.5f, k), k.breakpointShove, 1e-6);
+		NEAR(BreakpointShove(kKnotBeat * 2.0f, k), k.breakpointShove * k.breakpointBeat, 1e-6);
+		// A's release shoves toward B's hands, B's toward A's; the shove is kept for the bar's flash
+		Struggle a = Locked(k);
+		a.age = kKnotBeat * 0.5f;
+		NEAR(Breakpoint(a, true, 6.0f, k), k.breakpointShove, 1e-6);
+		NEAR(a.balance, k.breakpointShove, 1e-6);
+		CHECK(a.overA == 6.0f && a.overB == 0.0f && !a.shoveOnBeat);
+		NEAR(a.shoveAge, kKnotBeat * 0.5f, 1e-6);
+		Struggle b = Locked(k);
+		b.age = kKnotBeat;
+		(void)Breakpoint(b, false, 6.0f, k);
+		NEAR(b.balance, -k.breakpointShove * k.breakpointBeat, 1e-6);
+		CHECK(b.shoveOnBeat && b.overB == 6.0f && b.overA == 0.0f);
+		// equal mages: the side in Overdrive leads by a third (twice as hard) until its burst is over, then they are even
+		Struggle c = Locked(k);
+		c.age = 1.0f;
+		(void)Breakpoint(c, true, 0.5f, k);
+		NEAR(Advance(c, Mage(50), Mage(50), kBoth, 0.1f, k).lead, 1.0f / 3.0f, 1e-5);
+		for (int i = 0; i < 6; ++i) {
+			(void)Advance(c, Mage(50), Mage(50), kBoth, 0.1f, k);
+		}
+		CHECK(Advance(c, Mage(50), Mage(50), kBoth, 0.1f, k).lead == 0.0f && c.overA == 0.0f);
+		// a shove to the hands breaks through on the next step
+		Struggle d = Locked(k);
+		d.age = 1.0f;
+		d.balance = 0.9f;
+		(void)Breakpoint(d, true, 6.0f, k);
+		CHECK(d.balance == 1.0f);
+		const StruggleStep broke = Advance(d, Mage(50), Mage(50), kBoth, 0.05f, k);
+		CHECK(broke.event == StruggleEvent::kOverwhelmed && broke.aWon);
+		// switched off, or not locked: nothing moves
+		StruggleConfig off;
+		off.breakpoint = false;
+		Struggle e = Locked(off);
+		CHECK(Breakpoint(e, true, 6.0f, off) == 0.0f && e.balance == 0.0f && e.overA == 0.0f && e.shoveAge < 0.0f);
+		Struggle f = Locked(k);
+		f.overA = 3.0f;
+		f.age = 1.0f;
+		CHECK(Advance(f, Mage(50), Mage(50), kBoth, 0.1f, off).lead == 0.0f);  // a burst left over pushes nothing once it is off
+		Struggle g = Locked(k);
+		g.phase = Phase::kCooldown;
+		CHECK(Breakpoint(g, true, 6.0f, k) == 0.0f && g.balance == 0.0f);
+		// garbage stays sane
+		Struggle h = Locked(k);
+		h.age = nan;
+		h.balance = std::numeric_limits<float>::infinity();
+		const float shove = Breakpoint(h, false, -5.0f, k);
+		CHECK(std::isfinite(shove) && std::isfinite(h.balance) && h.balance >= -1.0f && h.balance <= 1.0f && h.overB == 0.0f);
+		CHECK(std::isfinite(Breakpoint(h, true, nan, k)) && h.overA == 0.0f);
 	}
 
 	// the owner's rule: the higher magic skill always wins
@@ -2351,6 +2417,9 @@ namespace
 		SameRange("MagickaWeight", power, [](StruggleConfig& k, float v) { k.magickaWeight = v; });
 		SameRange("DualCastBonus", power, [](StruggleConfig& k, float v) { k.dualBonus = v; });
 		SameRange("SurgePower", [](const StruggleConfig& k) { return Advantage(Mage(50), Mage(50), k, true, false); }, [](StruggleConfig& k, float v) { k.surgePower = v; });
+		SameRange("BreakpointPower", [](const StruggleConfig& k) { return Advantage(Mage(50), Mage(50), k, false, false, true, false); }, [](StruggleConfig& k, float v) { k.breakpointPower = v; });
+		SameRange("BreakpointShove", [](const StruggleConfig& k) { return BreakpointShove(kKnotBeat * 0.5f, k); }, [](StruggleConfig& k, float v) { k.breakpointShove = v; });
+		SameRange("BreakpointBeat", [](const StruggleConfig& k) { return BreakpointShove(0.0f, k); }, [](StruggleConfig& k, float v) { k.breakpointBeat = v; });
 		SameRange("EnemyPower", [](const StruggleConfig& k) { return PowerMult(true, false, 0, k); }, [](StruggleConfig& k, float v) { k.enemyPower = v; });
 		SameRange("DragonPower", [](const StruggleConfig& k) { return PowerMult(false, true, 0, k); }, [](StruggleConfig& k, float v) { k.dragonPower = v; });
 		SameRange("ShoutWordBonus", [](const StruggleConfig& k) { return PowerMult(false, false, 3, k); }, [](StruggleConfig& k, float v) { k.wordBonus = v; });
@@ -2590,9 +2659,243 @@ static void TestPathText()
 	CHECK(PathText(std::filesystem::path()).empty());
 }
 
+// Crossfire's two outside checks, adapted (its fuzz_touch and fuzz_ini, kept in the mod's Docs\From Crossfire).
+// FirstTouch against an independent reference: its own distance functions in double precision, each frame sampled densely,
+// no code shared with the search it checks; two bolts flying head on take their reach as FirstTouch is told to.
+namespace Reference
+{
+	struct D3
+	{
+		double x{ 0.0 }, y{ 0.0 }, z{ 0.0 };
+	};
+	D3     Of(Vec3 a) { return { a.x, a.y, a.z }; }
+	D3     operator-(D3 a, D3 b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
+	D3     operator+(D3 a, D3 b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
+	D3     operator*(D3 a, double s) { return { a.x * s, a.y * s, a.z * s }; }
+	double Dot(D3 a, D3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+	double Len(D3 a) { return std::sqrt(Dot(a, a)); }
+
+	double SegDist(D3 p, D3 a, D3 b)
+	{
+		const D3     ab = b - a;
+		const double l = Dot(ab, ab);
+		const double t = l > 0.0 ? std::clamp(Dot(p - a, ab) / l, 0.0, 1.0) : 0.0;
+		return Len(p - (a + ab * t));
+	}
+	// an upright rectangle: base centre `from`, `across` * [-halfWidth, halfWidth], z in [0, height]
+	double RectDist(D3 p, const Body& w)
+	{
+		const D3     o = Of(w.from), u = Of(w.across), d = p - o;
+		const double s = std::clamp(Dot(d, u), -static_cast<double>(w.halfWidth), static_cast<double>(w.halfWidth));
+		const double h = std::clamp(d.z, 0.0, static_cast<double>(w.height));
+		return Len(p - (o + u * s + D3{ 0.0, 0.0, h }));
+	}
+	// the distance between the two at time t (a moving sphere against anything; two beams stand still)
+	double Dist(const Body& a, const Body& b, double t)
+	{
+		const auto at = [](const Body& s, double when) { return Of(s.from) + (Of(s.to) - Of(s.from)) * when; };
+		if (a.shape == Shape::kSphere && b.shape == Shape::kSphere) {
+			return Len(at(a, t) - at(b, t));
+		}
+		const Body& s = a.shape == Shape::kSphere ? a : b;
+		const Body& o = a.shape == Shape::kSphere ? b : a;
+		return o.shape == Shape::kBeam ? SegDist(at(s, t), Of(o.from), Of(o.to)) : RectDist(at(s, t), o);
+	}
+	// head on: two flying spheres with a reach, heading at each other within the cone, the other one ahead. Unsure: so close
+	// to the cone's edge that float and double may disagree
+	enum class Facing
+	{
+		kNo,
+		kYes,
+		kUnsure
+	};
+	Facing HeadOn(const Body& a, const Body& b, double a_cos)
+	{
+		if (a.shape != Shape::kSphere || b.shape != Shape::kSphere || !(a.reach > 0.0f) || !(b.reach > 0.0f) || a_cos > 1.0) {
+			return Facing::kNo;
+		}
+		const D3     da = Of(a.to) - Of(a.from), db = Of(b.to) - Of(b.from);
+		const double la = Len(da), lb = Len(db);
+		if (la <= 2e-3 || lb <= 2e-3) {
+			return la <= 5e-4 || lb <= 5e-4 ? Facing::kNo : Facing::kUnsure;
+		}
+		const double c = Dot(da, db) / (la * lb), ahead = Dot(Of(b.from) - Of(a.from), da) / la;
+		if (std::abs(c + a_cos) < 1e-3 || std::abs(ahead) < 1e-3 * (1.0 + Len(Of(b.from) - Of(a.from)))) {
+			return Facing::kUnsure;
+		}
+		return c <= -a_cos && ahead > 0.0 ? Facing::kYes : Facing::kNo;
+	}
+}
+
+void TestFirstTouchReference()
+{
+	std::mt19937_64                        g(4242);
+	std::uniform_real_distribution<double> u(0.0, 1.0);
+	long                                   checked = 0, touched = 0, fails = 0;
+	const auto                             report = [&](const char* a_what, const Body& a, const Body& b, double x, double y) {
+		if (++fails <= 8) {
+			std::printf(
+				"FirstTouch against the reference: %s: shapes %d/%d r %.4g+%.4g reach %.4g+%.4g a (%.6g %.6g %.6g)->(%.6g %.6g %.6g) "
+				"b (%.6g %.6g %.6g)->(%.6g %.6g %.6g) [%g %g]\n",
+				a_what, static_cast<int>(a.shape), static_cast<int>(b.shape), a.radius, b.radius, a.reach, b.reach, a.from.x, a.from.y, a.from.z,
+				a.to.x, a.to.y, a.to.z, b.from.x, b.from.y, b.from.z, b.to.x, b.to.y, b.to.z, x, y);
+		}
+	};
+	constexpr int kSamples = 1000;  // the checks run under Dr. Memory too: kept small
+	for (int i = 0; i < 12000; ++i) {
+		// a scale per case, from tiny to world-sized, with degenerate cases on purpose
+		const double scale = std::pow(10.0, -1.0 + 6.0 * u(g));
+		const auto   rnd = [&](double s) { return static_cast<float>((u(g) * 2.0 - 1.0) * s); };
+		const auto   pt = [&]() {
+			const float x = rnd(scale), y = rnd(scale), z = rnd(scale);
+			return Vec3{ x, y, z };
+		};
+		Body a, b;
+		a.shape = Shape::kSphere;
+		a.from = pt();
+		a.to = u(g) < 0.1 ? a.from : a.from + Vec3{ rnd(scale), rnd(scale), rnd(scale) };
+		a.radius = u(g) < 0.05 ? 0.0f : static_cast<float>(u(g) * scale * 0.3);
+		a.reach = u(g) < 0.5 ? static_cast<float>(u(g) * scale * 0.2) : 0.0f;
+		const double kind = u(g);
+		b.radius = u(g) < 0.05 ? 0.0f : static_cast<float>(u(g) * scale * 0.3);
+		if (kind < 0.4) {
+			b.shape = Shape::kSphere;
+			b.from = u(g) < 0.05 ? a.from : pt();
+			// half of them flying back at the first, so head-on catches come up often
+			b.to = u(g) < 0.1 ? b.from : (u(g) < 0.5 ? b.from - (a.to - a.from) * static_cast<float>(0.5 + u(g)) : b.from + Vec3{ rnd(scale), rnd(scale), rnd(scale) });
+			b.reach = u(g) < 0.5 ? static_cast<float>(u(g) * scale * 0.2) : 0.0f;
+		} else if (kind < 0.7) {
+			b.shape = Shape::kBeam;
+			b.from = pt();
+			b.to = u(g) < 0.05 ? b.from : b.from + Vec3{ rnd(scale * 2.0), rnd(scale * 2.0), rnd(scale) };
+		} else {
+			b.shape = Shape::kBarrier;
+			b.from = pt();
+			const double ang = u(g) * 6.283185307;
+			b.across = { static_cast<float>(std::cos(ang)), static_cast<float>(std::sin(ang)), 0.0f };
+			b.halfWidth = static_cast<float>(scale * (0.01 + u(g)));
+			b.height = static_cast<float>(scale * (0.01 + u(g)));
+			b.to = b.from;
+		}
+		const bool  swap = u(g) < 0.5;
+		const Body& A = swap ? b : a;
+		const Body& B = swap ? a : b;
+		const float headOnCos = u(g) < 0.5 ? std::cos(25.0f * std::numbers::pi_v<float> / 180.0f) : 2.0f;
+		const auto  facing = Reference::HeadOn(A, B, headOnCos);
+		if (!Valid(A) || !Valid(B) || facing == Reference::Facing::kUnsure) {
+			continue;
+		}
+		++checked;
+		Touch        t;
+		const bool   hit = FirstTouch(A, B, t, headOnCos);
+		const double r = static_cast<double>(a.radius) + b.radius + (facing == Reference::Facing::kYes ? static_cast<double>(a.reach) + b.reach : 0.0);
+		const double tol = 2e-4 * (scale + r) + 1e-3;  // float storage of world-sized coordinates
+		double       refFirst = -1.0, minD = 1e300;
+		for (int k = 0; k <= kSamples; ++k) {
+			const double d = Reference::Dist(A, B, static_cast<double>(k) / kSamples);
+			minD = std::min(minD, d);
+			if (refFirst < 0.0 && d <= r - tol) {
+				refFirst = static_cast<double>(k) / kSamples;
+			}
+		}
+		if (refFirst >= 0.0 && !hit) {
+			report("the reference touches, FirstTouch says no", A, B, refFirst, minD - r);
+			continue;
+		}
+		if (!hit) {
+			continue;
+		}
+		++touched;
+		if (!(t.t >= 0.0f && t.t <= 1.0f) || !std::isfinite(t.point.x) || !std::isfinite(t.point.y) || !std::isfinite(t.point.z)) {
+			report("the touch time or point is out of range", A, B, t.t, 0.0);
+			continue;
+		}
+		const bool   still = A.shape != Shape::kSphere && B.shape != Shape::kSphere;
+		const double dAt = Reference::Dist(A, B, still ? 0.0 : t.t);
+		if (dAt > r + tol) {
+			report("FirstTouch's time is not touching", A, B, t.t, dAt - r);
+		} else if (minD > r + tol) {
+			report("FirstTouch says yes, the reference never comes close", A, B, t.t, minD - r);
+		} else if (refFirst >= 0.0 && t.t > refFirst + 1.0 / kSamples + 1e-4) {
+			report("FirstTouch is later than the first touch", A, B, t.t, refFirst);
+		}
+	}
+	std::printf("FirstTouch against the reference: %ld pairs (%ld touching), %ld failure(s)\n", checked, touched, fails);
+	CHECK(fails == 0);
+	CHECK(checked > 8000 && touched > 800);  // the random cases reach both outcomes
+	// Resolve: what must hold for any table, strengths and ratio
+	std::uniform_int_distribution<int> el(0, static_cast<int>(kElements) - 1), act(0, 4);
+	long                               bad = 0;
+	for (int i = 0; i < 12000; ++i) {
+		Table tb = DefaultTable();
+		for (int k = 0; k < 4; ++k) {
+			SetReaction(tb, static_cast<Element>(el(g)), static_cast<Element>(el(g)), static_cast<Action>(act(g)));
+		}
+		const auto  ea = static_cast<Element>(el(g)), eb = static_cast<Element>(el(g));
+		const float sa = u(g) < 0.05 ? 0.0f : static_cast<float>(std::pow(10.0, 4.0 * u(g) - 1.0));
+		const float sb = u(g) < 0.05 ? 0.0f : static_cast<float>(std::pow(10.0, 4.0 * u(g) - 1.0));
+		const float ratio = static_cast<float>(1.0 + 20.0 * u(g));
+		const bool  ia = u(g) < 0.2, ib = u(g) < 0.2, weaken = u(g) < 0.5;
+		const auto  o = Resolve(tb, ratio, weaken, ea, sa, ia, eb, sb, ib);
+		const bool  ok = (!ia || (!o.killA && o.strengthA == sa)) && (!ib || (!o.killB && o.strengthB == sb)) && std::isfinite(o.strengthA) &&
+		                 std::isfinite(o.strengthB) && o.strengthA >= 0.0f && o.strengthB >= 0.0f && o.strengthA <= sa && o.strengthB <= sb &&
+		                 (o.happened || (!o.killA && !o.killB));
+		bad += ok ? 0 : 1;
+	}
+	CHECK(bad == 0);
+}
+
+// the settings reader against anything (Crossfire's fuzz_ini, run here without libFuzzer): every input parses, a form
+// reference never throws, and whatever was read writes and reads back without a single warning
+void TestIniFuzz()
+{
+	std::mt19937                       g(77);
+	std::uniform_int_distribution<int> byte(0, 255), pick(0, 9);
+	const std::string                  written = WriteSettings(Config{});
+	const std::string_view             junk[]{ "=", "[", "]", ";", "#", "\r\n", "\n", " ", "-1e39", "nan", "inf", "0x7FFFFFFF", "\xEF\xBB\xBF",
+		"[Struggle]", "Breakpoint=", "BreakpointShove=", "true", "999999999999", "\xC3", "Plugin.esp|0x800" };
+	long                               warned = 0;
+	for (int i = 0; i < 6000; ++i) {
+		std::string text;
+		switch (i % 3) {
+		case 0:  // random bytes
+			text.resize(static_cast<std::size_t>(byte(g)) * 4);
+			for (auto& c : text) {
+				c = static_cast<char>(byte(g));
+			}
+			break;
+		case 1:  // the written file with random bytes changed
+			text = written;
+			for (int k = 0; k < 1 + pick(g) * 3; ++k) {
+				text[static_cast<std::size_t>(g() % text.size())] = static_cast<char>(byte(g));
+			}
+			break;
+		default:  // pieces of ini, glued at random
+			for (int k = 0; k < 40; ++k) {
+				text += junk[g() % std::size(junk)];
+			}
+			break;
+		}
+		Config                   config;
+		std::vector<std::string> warnings;
+		ParseIni(text, config, warnings);
+		FormRef ref;
+		(void)ParseFormRef(text, ref);
+		Config                   back;
+		std::vector<std::string> again;
+		ParseIni(WriteSettings(config), back, again);
+		CHECK(again.empty());
+		CHECK(WriteSettings(back) == WriteSettings(config));
+		warned += warnings.size() > 200 ? 1 : 0;
+	}
+	CHECK(warned == 0);
+}
+
 int main()
 {
 	TestPathText();
+	TestFirstTouchReference();
+	TestIniFuzz();
 	TestVectors();
 	TestSphereSphere();
 	TestHeadOn();
@@ -2619,6 +2922,7 @@ int main()
 	TestSkill();
 	TestLogPower();
 	TestAdvantage();
+	TestBreakpoint();
 	TestSkillAlwaysWins();
 	TestWorkedExamples();
 	TestSecondsToWin();

@@ -7,22 +7,21 @@
 // parts show nothing at night without a light).
 // CREDIT: how the light is made and registered follows ReLight by Truman (github.com/TrumanGIT/ReLight), GPL-3.0-or-later,
 // with his permission: one master light made once and cloned for every light, registered as a dynamic, shadowless light.
-// With Community Shaders' inverse-square lighting the light's two words are written as a light of its own is (Illuminated's
-// LightKit, ours). Main thread only.
+// With Community Shaders' inverse-square lighting the light's two words are written as a light of its own is (LightWords.h).
+// Main thread only.
 
 #include "ClashShared.h"
+#include "LightWords.h"
 
 namespace Crossfire
 {
 	namespace
 	{
-		constexpr const char*   kName = "ArcaneClashLight";
-		constexpr float         kSize = 1.414f;   // the light's size, carried in its radius' z
-		constexpr float         kK = 3918.88f;    // inverse square: cutoff = K * fade / (reach^2 + size^2)
-		constexpr float         kReach = 320.0f;  // units, at 100 % and a burst scale of 1
-		constexpr float         kFade = 2.2f;     // its peak brightness at 100 %
-		constexpr float         kLife = 1.25f;    // seconds: gone well before the design's 2 s
-		constexpr std::uint32_t kIslFlag = 1u << 10, kIslInitialised = 1u << 8;
+		constexpr float       kReach = 320.0f;   // units, at 100 % and a burst scale of 1
+		constexpr float       kFade = 2.2f;      // its peak brightness at 100 %
+		constexpr float       kLife = 1.25f;     // seconds: gone well before the design's 2 s
+		constexpr std::size_t kMostLights = 24;  // all of ours at once
+		constexpr std::size_t kMostGlows = 16;   // of them afterglows: the rest kept for clashes
 
 		struct Lit
 		{
@@ -32,16 +31,14 @@ namespace Crossfire
 			float                           peak{ 0.0f };
 			float                           age{ 0.0f };
 			bool                            placed{ false };  // its design has been in the world (has had a parent)
+			float                           life{ kLife };
+			bool                            glow{ false };   // an afterglow: it starts at its peak and only fades
+			const RE::NiAVObject*           top{ nullptr };  // an afterglow: the top of its node's tree when hung, only compared
 		};
-		std::vector<Lit> gLit;
+		std::vector<Lit>         gLit;
+		std::atomic<std::size_t> gLitCount{ 0 };  // gLit's size, for DevBench's thread
 
 		[[nodiscard]] RE::ShadowSceneNode* Scene() { return RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0]; }
-
-		[[nodiscard]] bool InverseSquare()
-		{
-			static const bool cs = REX::W32::GetModuleHandleA("CommunityShaders.dll") != nullptr;
-			return cs;
-		}
 
 		// ReLight's master-and-clone: a light made fresh and attached at once crashes, a clone of one made earlier does not
 		[[nodiscard]] RE::NiPointLight* CloneLight()
@@ -74,15 +71,6 @@ namespace Crossfire
 			return a_scene && a_light ? a_scene->AddLight(a_light, params) : nullptr;
 		}
 
-		// Community Shaders' two words at the head of the light's data: its flags (a light of our own, inverse square) and cutoff
-		void SetInverseSquare(RE::NiPointLight* a_light, float a_fade, float a_reach)
-		{
-			const std::array<std::uint32_t, 2> words{ kIslFlag | kIslInitialised,
-				std::bit_cast<std::uint32_t>(std::clamp(kK * a_fade / (a_reach * a_reach + kSize * kSize), 0.01f, 0.99f)) };
-			std::memcpy(reinterpret_cast<std::byte*>(&a_light->GetLightRuntimeData()), words.data(), sizeof(words));
-			a_light->GetLightRuntimeData().ambient.blue = 0.0f;
-		}
-
 		// its brightness over its life, 0..1: up in 0.04 s, held to 0.12 s, then easing out to nothing at kLife
 		[[nodiscard]] float Curve(float a_age) noexcept
 		{
@@ -96,6 +84,8 @@ namespace Crossfire
 			return std::pow(1.0f - u, 1.6f);
 		}
 
+		[[nodiscard]] float Glow(float a_age, float a_life) noexcept { return std::pow(1.0f - std::clamp(a_age / a_life, 0.0f, 1.0f), 1.6f); }
+
 		void LetGo(Lit& a_lit, RE::ShadowSceneNode* a_scene)
 		{
 			if (a_scene && a_lit.bs) {
@@ -107,45 +97,85 @@ namespace Crossfire
 		}
 	}
 
+	namespace
+	{
+		// one light hung on a node: a_reach units, a_peak at its brightest, the node's own scale a_nodeScale undone. An afterglow on a
+		// node that already has one starts that one again instead: one per hand and per target
+		void Hang(RE::NiNode* a_root, Core::Rgb a_color, float a_reach, float a_peak, float a_nodeScale, float a_life, bool a_glow)
+		{
+			auto* scene = Scene();
+			if (!a_root || !scene || !(a_peak > 0.0f) || !(a_life > 0.0f)) {
+				return;
+			}
+			const float       top = static_cast<float>((std::max)({ a_color.r, a_color.g, a_color.b }));
+			const RE::NiColor color = top > 0.0f ? RE::NiColor{ a_color.r / top, a_color.g / top, a_color.b / top } : RE::NiColor{ 1.0f, 1.0f, 1.0f };
+			if (a_glow) {
+				const auto same = std::ranges::find_if(gLit, [a_root](const Lit& a_lit) { return a_lit.glow && a_lit.root.get() == a_root; });
+				if (same != gLit.end() && same->light) {
+					same->peak = std::max(a_peak, same->light->GetLightRuntimeData().fade);
+					same->age = 0.0f;
+					same->life = a_life;
+					auto& was = same->light->GetLightRuntimeData();
+					was.diffuse = color;
+					if (LightWords::InverseSquare()) {
+						LightWords::Write(same->light.get(), same->peak, was.radius.x);
+					} else {
+						was.ambient = { color.red * 0.1f, color.green * 0.1f, color.blue * 0.1f };
+					}
+					return;
+				}
+				if (std::ranges::count_if(gLit, [](const Lit& a_lit) { return a_lit.glow; }) >= static_cast<std::ptrdiff_t>(kMostGlows)) {
+					return;
+				}
+			}
+			if (gLit.size() >= kMostLights) {
+				return;
+			}
+			auto* light = CloneLight();
+			if (!light) {
+				return;
+			}
+			light->name = LightWords::kClash;
+			auto& data = light->GetLightRuntimeData();
+			data.diffuse = color;
+			data.fade = 0.0f;
+			data.radius = { a_reach, a_reach, LightWords::kSize };
+			light->SetLightAttenuation(a_reach);
+			if (LightWords::InverseSquare()) {
+				LightWords::Write(light, a_peak, a_reach);
+			} else {
+				data.ambient = { color.red * 0.1f, color.green * 0.1f, color.blue * 0.1f };  // RE::Light's rule: a tenth of the diffuse
+			}
+			// the node (a design's mesh, a hand, a body) may be scaled and the light hangs inside it: its own scale undoes that
+			light->local.translate = {};
+			light->local.scale = 1.0f / a_nodeScale;
+			a_root->AttachChild(light, true);
+			RE::NiUpdateData update{};
+			light->Update(update);
+			auto* bs = AddToScene(scene, light);
+			if (!bs) {
+				a_root->DetachChild(light);
+				return;
+			}
+			if (a_glow) {
+				light->GetLightRuntimeData().fade = a_peak;
+			}
+			gLit.push_back({ RE::NiPointer<RE::NiNode>(a_root), RE::NiPointer<RE::NiPointLight>(light), RE::NiPointer<RE::BSLight>(bs), a_peak, 0.0f,
+				a_root->parent != nullptr, a_life, a_glow, a_glow ? TopOf(a_root) : nullptr });
+			gLitCount = gLit.size();
+		}
+	}
+
 	void LightDesign(RE::NiAVObject* a_root, Core::Rgb a_color, float a_scale, float a_percent)
 	{
-		auto* root = a_root ? a_root->AsNode() : nullptr;
-		auto* scene = Scene();
-		if (!root || !scene || !(a_percent > 0.0f) || gLit.size() >= 24) {
-			return;
-		}
-		auto* light = CloneLight();
-		if (!light) {
-			return;
-		}
-		const float       top = static_cast<float>((std::max)({ a_color.r, a_color.g, a_color.b }));
-		const RE::NiColor color = top > 0.0f ? RE::NiColor{ a_color.r / top, a_color.g / top, a_color.b / top } : RE::NiColor{ 1.0f, 1.0f, 1.0f };
-		const float       scale = std::isfinite(a_scale) && a_scale > 0.0f ? a_scale : 1.0f;
-		const float       reach = kReach * scale;
-		const float       peak = kFade * a_percent / 100.0f;
-		light->name = kName;
-		auto& data = light->GetLightRuntimeData();
-		data.diffuse = color;
-		data.fade = 0.0f;
-		data.radius = { reach, reach, kSize };
-		light->SetLightAttenuation(reach);
-		if (InverseSquare()) {
-			SetInverseSquare(light, peak, reach);
-		} else {
-			data.ambient = { color.red * 0.1f, color.green * 0.1f, color.blue * 0.1f };  // RE::Light's rule: a tenth of the diffuse
-		}
-		// the design's mesh may be scaled and the light hangs inside it: its own scale undoes that
-		light->local.translate = {};
-		light->local.scale = 1.0f / scale;
-		root->AttachChild(light, true);
-		RE::NiUpdateData update{};
-		light->Update(update);
-		auto* bs = AddToScene(scene, light);
-		if (!bs) {
-			root->DetachChild(light);
-			return;
-		}
-		gLit.push_back({ RE::NiPointer<RE::NiNode>(root), RE::NiPointer<RE::NiPointLight>(light), RE::NiPointer<RE::BSLight>(bs), peak, 0.0f, root->parent != nullptr });
+		const float scale = std::isfinite(a_scale) && a_scale > 0.0f ? a_scale : 1.0f;
+		Hang(a_root ? a_root->AsNode() : nullptr, a_color, kReach * scale, kFade * a_percent / 100.0f, scale, kLife, false);
+	}
+
+	void LightAfterglow(RE::NiNode* a_node, Core::Rgb a_color, float a_reach, float a_fade, float a_seconds)
+	{
+		const float nodeScale = a_node && std::isfinite(a_node->world.scale) && a_node->world.scale > 0.0f ? a_node->world.scale : 1.0f;
+		Hang(a_node, a_color, a_reach, a_fade, nodeScale, std::clamp(a_seconds, 0.1f, 10.0f), true);
 	}
 
 	void UpdateLights(float a_delta)
@@ -157,16 +187,18 @@ namespace Crossfire
 		const float dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
 		std::erase_if(gLit, [&](Lit& a_lit) {
 			a_lit.age += dt;
-			const bool inWorld = a_lit.root && a_lit.root->parent;
+			// an afterglow's node keeps its parent when its actor unloads: the top of its tree tells
+			const bool inWorld = a_lit.root && a_lit.root->parent && (!a_lit.top || TopOf(a_lit.root.get()) == a_lit.top);
 			a_lit.placed = a_lit.placed || inWorld;
-			// done, or its design was taken out of the world before its time (a load, a cell change)
-			if (a_lit.age >= kLife || !a_lit.root || !a_lit.light || (a_lit.placed && !inWorld)) {
+			// done, or its design or actor was taken out of the world before its time (a load, a cell change)
+			if (a_lit.age >= a_lit.life || !a_lit.root || !a_lit.light || (a_lit.placed && !inWorld)) {
 				LetGo(a_lit, scene);
 				return true;
 			}
-			a_lit.light->GetLightRuntimeData().fade = a_lit.peak * Curve(a_lit.age);
+			a_lit.light->GetLightRuntimeData().fade = a_lit.peak * (a_lit.glow ? Glow(a_lit.age, a_lit.life) : Curve(a_lit.age));
 			return false;
 		});
+		gLitCount = gLit.size();
 	}
 
 	void ClearLights()
@@ -176,7 +208,8 @@ namespace Crossfire
 			LetGo(lit, scene);
 		}
 		gLit.clear();
+		gLitCount = 0;
 	}
 
-	std::size_t LightsLit() { return gLit.size(); }
+	std::size_t LightsLit() { return gLitCount.load(); }
 }
