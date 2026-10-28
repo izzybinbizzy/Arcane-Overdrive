@@ -384,14 +384,15 @@ namespace Crossfire
 
 		// what a clash shows where a projectile went: its own (or its element's) explosion when it only shows, else its
 		// element's stand-in model, and its look's design in its own color (and `a_also`'s, when it looks different).
-		// False when there was nothing to show, or the limiter held it back.
+		// False when there was nothing to show, or the limiter held it back. a_design false: the burst only, no design.
 		bool ShowBurst(RE::Projectile* a_p, const RE::BGSProjectile* a_base, const Info& a_info, Vec3 a_at, std::uint64_t a_pair,
-			const Core::Config& a_cfg, const Info* a_also = nullptr)
+			const Core::Config& a_cfg, const Info* a_also = nullptr, bool a_design = true)
 		{
 			auto*       explosion = BurstOf(a_p, a_base, a_info.element, a_cfg);
 			const char* model = !explosion && a_cfg.standInBursts ? StandInModel(a_info.element) : nullptr;
-			const char* art = a_cfg.designs ? ClashArt(a_info.look) : nullptr;
-			const char* also = a_cfg.designs && a_also && a_also->look != a_info.look ? ClashArt(a_also->look) : nullptr;
+			const bool  designs = a_design && a_cfg.designs;
+			const char* art = designs ? ClashArt(a_info.look) : nullptr;
+			const char* also = designs && a_also && a_also->look != a_info.look ? ClashArt(a_also->look) : nullptr;
 			if ((!explosion && !model && !art && !also) || !gBursts.Allow(a_pair)) {
 				return false;
 			}
@@ -940,7 +941,7 @@ namespace Crossfire
 		gStats.cut.fetch_add(1, std::memory_order_relaxed);
 	}
 
-	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config)
+	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config, const Info* a_also, bool a_design)
 	{
 		if (a_entry >= gEntries.size() || !a_config.explosions) {
 			return false;
@@ -950,7 +951,7 @@ namespace Crossfire
 		if (!p) {
 			return false;
 		}
-		return ShowBurst(p, e.base, e.info, a_at, a_pair, a_config);
+		return ShowBurst(p, e.base, e.info, a_at, a_pair, a_config, a_also, a_design);
 	}
 
 	bool ShowDesign(std::string_view a_look, std::string_view a_pair, std::optional<Core::Rgb> a_color, float a_ahead, float a_up)

@@ -101,8 +101,10 @@ namespace Crossfire
 		float                          radius{ 0.0f }, power{ 1.0f }, length{ 0.0f };  // length: a beam's, as drawn
 		RE::MagicSystem::CastingSource source{ RE::MagicSystem::CastingSource::kOther };
 	};
-	void Snuff(std::size_t a_entry);                                                                         // kill it quietly: no burst, no event, no experience
-	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config);  // its own explosion
+	void Snuff(std::size_t a_entry);  // kill it quietly: no burst, no event, no experience
+	// its own explosion, and (a_design) its clash design with `a_also`'s when that looks different
+	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config, const Info* a_also = nullptr,
+		bool a_design = true);
 	// ------------------------------------------------------------------ ClashLights.cpp: the light a design casts (main thread)
 	void LightDesign(RE::NiAVObject* a_root, Core::Rgb a_color, float a_scale, float a_percent);  // hung on the design's mesh
 	// a light that starts at a_fade and fades out over a_seconds on a node that stays (a hand, a hit target) - Overload.cpp's lingering

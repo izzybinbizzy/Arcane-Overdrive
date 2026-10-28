@@ -72,6 +72,7 @@ namespace Crossfire
 		std::uint64_t                                               gEngagements = 0;
 		std::uint32_t                                               gFrame = 0;
 		double                                                      gClock = 0.0;
+		Core::Limiter                                               gDesigns;                                   // a lock's design: once per kLockDesignEvery
 		Heat::Meter::State                                          gMyState{ Heat::Meter::State::kBuilding };  // the player's bar last frame
 		std::mutex                                                  gViewLock;
 		StruggleView                                                gView;
@@ -282,19 +283,23 @@ namespace Crossfire
 			return best;
 		}
 
-		void BurstFor(std::uint32_t a_first, std::uint32_t a_second, Vec3 a_at, std::uint64_t a_key, const Core::Config& a_cfg)
+		// a_grind: the spark while both push, whose design waits its turn; a lock's start, shove and end always show theirs
+		void BurstFor(std::uint32_t a_first, std::uint32_t a_second, Vec3 a_at, std::uint64_t a_key, const Core::Config& a_cfg, bool a_grind = false)
 		{
 			if (!a_cfg.struggle.lockBursts) {
 				return;
 			}
 			// BOTH spells burst where they meet - fire against frost shows the fire burst AND the frost burst; each side keeps
-			// its own rate limit
-			std::uint64_t key = a_key;
-			for (const auto who : { a_first, a_second }) {
-				if (const auto* s = AnyStream(who)) {
-					BurstAt(s->entry, a_at, key, a_cfg);
-				}
-				key ^= 0x9E3779B97F4A7C15ull;
+			// its own rate limit. The clash design shows once for the pair (each look once, one light), a grind's at most every
+			// kLockDesignEvery: one a side every spark stacked eight Fire designs and their lights and washed the frame white
+			const auto* first = AnyStream(a_first);
+			const auto* second = AnyStream(a_second);
+			const bool  design = gDesigns.Allow(a_key) || !a_grind;
+			if (first) {
+				BurstAt(first->entry, a_at, a_key, a_cfg, second ? second->info : nullptr, design);
+			}
+			if (second) {
+				BurstAt(second->entry, a_at, a_key ^ 0x9E3779B97F4A7C15ull, a_cfg, nullptr, design && !first);
 			}
 		}
 
@@ -717,6 +722,7 @@ namespace Crossfire
 			gTried.clear();
 			gBy.clear();
 			gStreams = {};
+			gDesigns = {};
 			std::scoped_lock lock(gViewLock);
 			gView = {};
 		}
@@ -733,6 +739,7 @@ namespace Crossfire
 			gStreams = a_streams;
 			gFrame = a_frame;
 			gClock += static_cast<double>(a_delta);
+			gDesigns.BeginFrame(gClock, 64, Core::kLockDesignEvery);
 			// a shooter seen last frame keeps its list for reuse; one not seen is forgotten, so the map never grows
 			std::erase_if(gBy, [](const auto& a_entry) { return a_entry.second.empty(); });
 			for (auto& [who, list] : gBy) {
@@ -844,7 +851,7 @@ namespace Crossfire
 					}
 				}
 				if (step.spark && front.valid) {
-					BurstFor(s.a, s.b, front.point, key, a_cfg);
+					BurstFor(s.a, s.b, front.point, key, a_cfg, true);
 				}
 				if (s.phase == Core::Phase::kLocked && (r.a.player || r.b.player) && gClock >= r.nextRumble && front.valid) {
 					r.nextRumble = gClock + 0.5;

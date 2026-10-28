@@ -405,18 +405,19 @@ namespace Crossfire::Core
 	inline constexpr float kDrawBand = 0.02f;  // at the time limit, closer to even than this is a draw
 	inline constexpr float kSurgeAt = 0.6f;    // how far back a side is pushed before it surges
 	inline constexpr float kSurgeTime = 3.0f;
-	inline constexpr float kBreathPace = 2.0f;    // a breath lasts two or three seconds, so a lock with one moves twice as fast
-	inline constexpr float kCooldownTime = 2.0f;  // after a struggle the pair pass through each other this long, then may lock again
-	inline constexpr float kSparkEvery = 0.5f;    // a burst at the lock while both push
-	inline constexpr float kWobble = 0.03f;       // the meeting point trembles this share of the way, for looks only
-	inline constexpr float kHandGap = 60.0f;      // the meeting point never comes closer to either caster's hands
-	inline constexpr float kKeepShare = 0.8f;     // of MinDistance: casters closer than this call a lock off
-	inline constexpr float kFacingCos = 0.643f;   // cos 50 degrees
-	inline constexpr float kMinLead = 0.15f;      // the least lead of the more skilled caster when skill always wins
-	inline constexpr float kSkillPoint = 0.02f;   // a point of skill over the other is 2% more push (at weight 1)
-	inline constexpr float kLevelPoint = 0.02f;   // and a level, 2%
-	inline constexpr float kKnotBeat = 1.2f;      // seconds between the meeting point's pulses on the struggle bar, from the lock
-	inline constexpr float kOnBeat = 0.15f;       // an Overdrive released this close to a pulse is on the beat
+	inline constexpr float kBreathPace = 2.0f;       // a breath lasts two or three seconds, so a lock with one moves twice as fast
+	inline constexpr float kCooldownTime = 2.0f;     // after a struggle the pair pass through each other this long, then may lock again
+	inline constexpr float kSparkEvery = 0.5f;       // a burst at the lock while both push
+	inline constexpr float kLockDesignEvery = 1.0f;  // a lock's clash design at most this often (one plays 2 s)
+	inline constexpr float kWobble = 0.03f;          // the meeting point trembles this share of the way, for looks only
+	inline constexpr float kHandGap = 60.0f;         // the meeting point never comes closer to either caster's hands
+	inline constexpr float kKeepShare = 0.8f;        // of MinDistance: casters closer than this call a lock off
+	inline constexpr float kFacingCos = 0.643f;      // cos 50 degrees
+	inline constexpr float kMinLead = 0.15f;         // the least lead of the more skilled caster when skill always wins
+	inline constexpr float kSkillPoint = 0.02f;      // a point of skill over the other is 2% more push (at weight 1)
+	inline constexpr float kLevelPoint = 0.02f;      // and a level, 2%
+	inline constexpr float kKnotBeat = 1.2f;         // seconds between the meeting point's pulses on the struggle bar, from the lock
+	inline constexpr float kOnBeat = 0.15f;          // an Overdrive released this close to a pulse is on the beat
 
 	// One side's pusher, read from the live actor every frame. A field that is not finite counts as its default here.
 	struct Caster
