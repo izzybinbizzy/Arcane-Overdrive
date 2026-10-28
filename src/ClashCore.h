@@ -672,7 +672,7 @@ namespace Crossfire::Core
 		// [Show]
 		bool  lockBursts{ true };
 		float cameraShake{ 0.4f };
-		bool  bar{ false };        // off by default until its look is approved
+		bool  bar{ true };         // the struggle bar (Overdrive Breakpoint's look, his yes - checklist 318)
 		float barHeight{ 82.0f };  // percent of the way down the screen
 		float barScale{ 1.0f };
 		float barOpacity{ 0.9f };
