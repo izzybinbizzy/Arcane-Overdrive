@@ -56,18 +56,26 @@ namespace Plugin
 			return ok;
 		}
 
-		// one file into a_s: its problems logged; how many keys it gave, and whether every advanced key was in it
-		int ReadFile(const char* a_path, Settings& a_s, bool& a_allAdvanced)
+		// a file's whole text, or none
+		[[nodiscard]] std::optional<std::string> FileText(const char* a_path)
 		{
 			std::ifstream in(a_path);
 			if (!in) {
-				a_allAdvanced = false;
-				return -1;
+				return std::nullopt;
 			}
 			std::stringstream text;
 			text << in.rdbuf();
-			const std::string  all = text.str();
-			std::istringstream lines(all);
+			return text.str();
+		}
+
+		// a file's text into a_s, its problems logged: how many keys it gave (no file: -1), and whether every advanced key was in it
+		int ParseText(const char* a_path, const std::optional<std::string>& a_text, Settings& a_s, bool& a_allAdvanced)
+		{
+			if (!a_text) {
+				a_allAdvanced = false;
+				return -1;
+			}
+			std::istringstream lines(*a_text);
 			const auto         read = SettingsText::Read(lines, a_s);
 			for (const auto& p : read.problems) {
 				SKSE::log::warn("settings: {}: {}", a_path, p);
@@ -78,6 +86,8 @@ namespace Plugin
 			});
 			return read.taken;
 		}
+
+		int ReadFile(const char* a_path, Settings& a_s, bool& a_allAdvanced) { return ParseText(a_path, FileText(a_path), a_s, a_allAdvanced); }
 	}
 
 	Settings Config()
@@ -145,10 +155,12 @@ namespace Plugin
 
 	bool ReloadAdvanced()
 	{
-		// read straight into the one copy under its lock, so a change made meanwhile on another thread is not lost
+		// the disk read outside the lock (the main thread takes it every frame); parsed straight into the one copy under it, so
+		// a change made meanwhile on another thread is not lost
+		const auto      text = FileText(SettingsText::kAdvancedFile);
 		bool            all = false;
 		std::lock_guard lock(gLock);
-		if (ReadFile(SettingsText::kAdvancedFile, gSettings, all) < 0) {
+		if (ParseText(SettingsText::kAdvancedFile, text, gSettings, all) < 0) {
 			SKSE::log::warn("settings: {} could not be read", SettingsText::kAdvancedFile);
 			return false;
 		}

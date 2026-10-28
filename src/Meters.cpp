@@ -340,7 +340,8 @@ namespace Plugin
 					}
 				}
 				track.idle = track.meter.Idle() ? track.idle + dt : 0.0f;
-				if (!actor || !s.enemies || actor->IsDead() || track.idle > kForgetEnemy) {
+				// one no longer hostile (calmed, yielded) loses its meter, so its spells stop taking the bonus (Multiplier)
+				if (!actor || !s.enemies || track.idle > kForgetEnemy || !Heats(actor, s)) {
 					it = gEnemies.erase(it);
 				} else {
 					++it;

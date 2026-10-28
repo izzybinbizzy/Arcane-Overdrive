@@ -115,8 +115,11 @@ namespace Crossfire
 					same->peak = std::max(a_peak, same->light->GetLightRuntimeData().fade);
 					same->age = 0.0f;
 					same->life = a_life;
-					auto& was = same->light->GetLightRuntimeData();
+					auto&       was = same->light->GetLightRuntimeData();
+					const float reach = std::max(a_reach, was.radius.x);  // the hotter of the two casts
 					was.diffuse = color;
+					was.radius = { reach, reach, LightWords::kSize };
+					same->light->SetLightAttenuation(reach);
 					if (LightWords::InverseSquare()) {
 						LightWords::Write(same->light.get(), same->peak, was.radius.x);
 					} else {
@@ -195,7 +198,12 @@ namespace Crossfire
 				LetGo(a_lit, scene);
 				return true;
 			}
-			a_lit.light->GetLightRuntimeData().fade = a_lit.peak * (a_lit.glow ? Glow(a_lit.age, a_lit.life) : Curve(a_lit.age));
+			auto&       data = a_lit.light->GetLightRuntimeData();
+			const float fade = a_lit.peak * (a_lit.glow ? Glow(a_lit.age, a_lit.life) : Curve(a_lit.age));
+			data.fade = fade;
+			if (LightWords::InverseSquare()) {
+				LightWords::Write(a_lit.light.get(), fade, data.radius.x);  // its cutoff follows its fade, as the hand glow's does
+			}
 			return false;
 		});
 		gLitCount = gLit.size();

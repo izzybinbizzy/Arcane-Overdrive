@@ -20,7 +20,7 @@
 //     or blinks out (Sparks in the red). Each is played once where the hand is, as the game plays an impact - no form is
 //     made - and moved with the hand while it lasts. The look is the hand's spell's element; a model that is not installed
 //     is never asked for.
-//   - LINGERING (his 2026-10-07 design, his "do them all" 2026-10-27), each capped and scaled by the Heat: after heavy
+//   - LINGERING, each capped and scaled by the Heat: after heavy
 //     casting (Hot or hotter as a hand's cast ends) the hand keeps spitting embers / frost / sparks a while (Hand embers) and a
 //     light of the spell's color hangs on it and fades out (Hand afterglow); whoever the player's spell hits (Warm or hotter)
 //     gets a light that fades out on them (Hit afterglow) and smoulders a moment (Smoulder). The embers and smoulder are the
@@ -696,6 +696,8 @@ namespace Plugin
 			gLight[1] = 1.0f;
 			gLingering.clear();
 			gCasting[0] = gCasting[1] = nullptr;
+			std::scoped_lock lock(gHitLock);
+			gNotedHits.clear();  // hits noted while off are not acted on when it comes back on
 		}
 		Ride(player);
 		const bool impactsOn = player && growing && a_s.impactsGrow;
