@@ -541,6 +541,7 @@ namespace Crossfire
 
 	void Update(float a_delta)
 	{
+		NotePassRan();
 		const auto& cfg = Live();
 		UpdateLights(std::isfinite(a_delta) ? a_delta : 0.0f);
 		if (!cfg.enabled) {

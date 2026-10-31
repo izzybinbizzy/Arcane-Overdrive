@@ -167,7 +167,8 @@ namespace Crossfire
 
 	// ------------------------------------------------------------------ ClashMenu.cpp: the two pages and the struggle bar
 	void RegisterMenu();
-	void RequestBarPreview();  // any thread: the struggle bar's sample shows for a few seconds (the menu's button, DevBench)
+	void RequestBarPreview();     // any thread: the struggle bar's sample shows for a few seconds (the menu's button, DevBench)
+	void NotePassRan() noexcept;  // main thread, every frame: the struggle bar hides when the pass stops (the game paused)
 
 	// ------------------------------------------------------------------ ClashDevBench.cpp
 	void OfferToDevBench();

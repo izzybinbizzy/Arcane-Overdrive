@@ -26,8 +26,8 @@
 #include "MenuStyle.h"
 #include "Translation.h"
 
-#include <mutex>
-#include <set>
+#include <chrono>
+#include <cstdint>
 
 namespace Crossfire
 {
@@ -447,40 +447,19 @@ namespace Crossfire
 				left ? core : clear, left ? core : clear, left ? clear : core);
 		}
 
-		// the pausing menus open now, kept on the game's thread at every menu open / close: the struggle bar is drawn on the
-		// render thread and never reads the game's UI itself
-		class PauseWatch final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
-		{
-		public:
-			static PauseWatch& Get()
-			{
-				static PauseWatch watch;
-				return watch;
-			}
-			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
-			{
-				if (a_event) {
-					Safe::Guarded("the pause watcher", [&] {
-						auto*             ui = RE::UI::GetSingleton();
-						const auto        menu = ui && a_event->opening ? ui->GetMenu(a_event->menuName.c_str()) : nullptr;
-						const std::string name(a_event->menuName.c_str());
-						std::lock_guard   lock(gate);
-						if (a_event->opening && menu && menu->PausesGame()) {
-							open.insert(name);
-						} else if (!a_event->opening) {
-							open.erase(name);
-						}
-						paused = !open.empty();
-					});
-				}
-				return RE::BSEventNotifyControl::kContinue;
-			}
-			std::atomic<bool> paused{ false };
+		// when the clash pass last ran (steady clock, ms): it runs from the player's update, which stops while anything pauses
+		// the game - so the struggle bar, drawn on the render thread, learns of a pause without reading the game's UI
+		std::atomic<std::int64_t> gLastPass{ 0 };
 
-		private:
-			std::mutex            gate;
-			std::set<std::string> open;
-		};
+		[[nodiscard]] std::int64_t NowMs() noexcept
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		[[nodiscard]] bool GamePaused() noexcept
+		{
+			return NowMs() - gLastPass.load(std::memory_order_relaxed) > 250;
+		}
 
 		void DrawBar()
 		{
@@ -538,7 +517,7 @@ namespace Crossfire
 				return;
 			}
 			// out of the way in a pausing menu, unless the menu asked for the preview
-			const bool  show = live && v.bar && (preview || !PauseWatch::Get().paused.load(std::memory_order_relaxed));
+			const bool  show = live && v.bar && (preview || !GamePaused());
 			const float dt = std::isfinite(io->DeltaTime) ? std::clamp(io->DeltaTime, 0.0f, 0.25f) : 0.0f;
 			alpha = std::clamp(alpha + (show ? dt : -dt) * 4.0f, 0.0f, 1.0f);
 			auto* dl = alpha > 0.0f ? GetForegroundDrawList() : nullptr;
@@ -651,6 +630,8 @@ namespace Crossfire
 
 	void RequestBarPreview() { gPreviewAsked = true; }
 
+	void NotePassRan() noexcept { gLastPass.store(NowMs(), std::memory_order_relaxed); }
+
 	void RegisterMenu()
 	{
 		if (!SKSEMenuFramework::IsInstalled()) {
@@ -659,8 +640,5 @@ namespace Crossfire
 		SKSEMenuFramework::AddSectionItem(T("Clashes"), Render);
 		SKSEMenuFramework::AddSectionItem(T("Spell struggles"), RenderStruggles);
 		SKSEMenuFramework::AddHudElement(RenderBar);
-		if (auto* ui = RE::UI::GetSingleton()) {
-			ui->AddEventSink<RE::MenuOpenCloseEvent>(&PauseWatch::Get());
-		}
 	}
 }
