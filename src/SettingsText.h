@@ -77,19 +77,7 @@ namespace Plugin
 		bool          debugLog{ false };
 		std::uint32_t performanceOff{ kPerformanceDefault };  // a bit per kVisuals entry: the Performance preset turns it off
 
-		bool operator==(const Settings& a_o) const
-		{
-			return enabled == a_o.enabled && tuning == a_o.tuning && boost == a_o.boost && overdriveKey == a_o.overdriveKey &&
-			       lightGrowth == a_o.lightGrowth && lightPerStage == a_o.lightPerStage && handGlow == a_o.handGlow && bar == a_o.bar &&
-			       spellGrowth == a_o.spellGrowth &&
-			       growthMax == a_o.growthMax && impactsGrow == a_o.impactsGrow && impactGrowth == a_o.impactGrowth &&
-			       redZoneWild == a_o.redZoneWild && wildness == a_o.wildness && overdriveFocus == a_o.overdriveFocus &&
-			       focusFlare == a_o.focusFlare && redSparks == a_o.redSparks && burnoutFlicker == a_o.burnoutFlicker && handEmbers == a_o.handEmbers &&
-			       handAfterglow == a_o.handAfterglow && hitAfterglow == a_o.hitAfterglow && smoulder == a_o.smoulder && arcHeat == a_o.arcHeat && marks == a_o.marks &&
-			       markHurt == a_o.markHurt && markMax == a_o.markMax && markSeconds == a_o.markSeconds && markHurtPerSecond == a_o.markHurtPerSecond &&
-			       counts.healingAndWards == a_o.counts.healingAndWards && counts.stavesAndScrolls == a_o.counts.stavesAndScrolls && enemies == a_o.enemies &&
-			       debugLog == a_o.debugLog && performanceOff == a_o.performanceOff;
-		}
+		bool operator==(const Settings&) const = default;
 	};
 
 	namespace SettingsText

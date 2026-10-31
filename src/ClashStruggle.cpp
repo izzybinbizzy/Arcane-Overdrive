@@ -24,9 +24,6 @@ namespace Crossfire
 	{
 		using Core::Vec3;
 
-		[[nodiscard]] Vec3         V(const RE::NiPoint3& a_p) noexcept { return { a_p.x, a_p.y, a_p.z }; }
-		[[nodiscard]] RE::NiPoint3 N(Vec3 a_v) noexcept { return { a_v.x, a_v.y, a_v.z }; }
-
 		// one side of a struggle, as it was when the lock began (the class of actor, its name) and as it last streamed
 		struct SideRec
 		{
@@ -87,6 +84,13 @@ namespace Crossfire
 		[[nodiscard]] bool Alive(RE::Actor* a_actor)
 		{
 			return a_actor && !a_actor->IsDead() && !a_actor->IsDisabled() && a_actor->Is3DLoaded();
+		}
+
+		// a shooter's streams this frame, or null
+		[[nodiscard]] const std::vector<std::size_t>* StreamsOf(std::uint32_t a_shooter)
+		{
+			const auto it = gBy.find(a_shooter);
+			return it != gBy.end() ? &it->second : nullptr;
 		}
 
 		[[nodiscard]] float AV(RE::Actor* a_actor, RE::ActorValue a_av)
@@ -794,9 +798,8 @@ namespace Crossfire
 					}
 					if (valid) {
 						// b. the muzzles, and how far each stream reaches
-						const auto ia = gBy.find(s.a), ib = gBy.find(s.b);
-						const Vec3 ma = MuzzleOf(actorA.get(), r.a.source, ia != gBy.end() ? &ia->second : nullptr);
-						const Vec3 mb = MuzzleOf(actorB.get(), r.b.source, ib != gBy.end() ? &ib->second : nullptr);
+						const Vec3 ma = MuzzleOf(actorA.get(), r.a.source, StreamsOf(s.a));
+						const Vec3 mb = MuzzleOf(actorB.get(), r.b.source, StreamsOf(s.b));
 						float      reachA = s.reachA, reachB = s.reachB;
 						if (const auto* la = AnyStream(s.a)) {
 							reachA = ReachOf(*la);
@@ -826,9 +829,10 @@ namespace Crossfire
 						cb = CasterOf(actorB.get(), r.b, sb.twoHands, r.a.player, a_cfg);
 					}
 				} else if (s.phase == Core::Phase::kDeclined) {
-					const auto ia = gBy.find(s.a), ib = gBy.find(s.b);
-					sight.seenA = ia != gBy.end() && !ia->second.empty();
-					sight.seenB = ib != gBy.end() && !ib->second.empty();
+					const auto* ia = StreamsOf(s.a);
+					const auto* ib = StreamsOf(s.b);
+					sight.seenA = ia && !ia->empty();
+					sight.seenB = ib && !ib->empty();
 				}
 
 				// e. one step
@@ -837,18 +841,14 @@ namespace Crossfire
 					front = Core::FrontOf(s);
 				}
 				// f. carry it out
-				if (step.drainA > 0.0f && actorA) {
-					const float cur = AV(actorA.get(), RE::ActorValue::kMagicka);
+				const auto drain = [](RE::Actor* a_actor, float a_amount) {
+					const float cur = a_actor && a_amount > 0.0f ? AV(a_actor, RE::ActorValue::kMagicka) : 0.0f;
 					if (cur > 0.0f) {
-						actorA->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kMagicka, std::min(step.drainA, cur));
+						a_actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kMagicka, std::min(a_amount, cur));
 					}
-				}
-				if (step.drainB > 0.0f && actorB) {
-					const float cur = AV(actorB.get(), RE::ActorValue::kMagicka);
-					if (cur > 0.0f) {
-						actorB->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kMagicka, std::min(step.drainB, cur));
-					}
-				}
+				};
+				drain(actorA.get(), step.drainA);
+				drain(actorB.get(), step.drainB);
 				if (step.spark && front.valid) {
 					BurstFor(s.a, s.b, front.point, key, a_cfg, true);
 				}
@@ -914,9 +914,8 @@ namespace Crossfire
 				gTried.insert(key);
 				return false;
 			}
-			const auto ia = gBy.find(a.shooter), ib = gBy.find(b.shooter);
-			const Vec3 ma = MuzzleOf(a.actor, a.source, ia != gBy.end() ? &ia->second : nullptr);
-			const Vec3 mb = MuzzleOf(b.actor, b.source, ib != gBy.end() ? &ib->second : nullptr);
+			const Vec3 ma = MuzzleOf(a.actor, a.source, StreamsOf(a.shooter));
+			const Vec3 mb = MuzzleOf(b.actor, b.source, StreamsOf(b.shooter));
 			if (!Core::Facing(ma, a.dir, mb, b.dir, sc.minGap)) {
 				gTried.insert(key);
 				return false;

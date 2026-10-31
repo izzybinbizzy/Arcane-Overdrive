@@ -22,8 +22,6 @@ namespace Crossfire
 		using Core::PairKey;
 		using Core::Vec3;
 
-		[[nodiscard]] Vec3         V(const RE::NiPoint3& a_p) noexcept { return { a_p.x, a_p.y, a_p.z }; }
-		[[nodiscard]] RE::NiPoint3 N(Vec3 a_v) noexcept { return { a_v.x, a_v.y, a_v.z }; }
 		// a unit vector along a_v; zero for none (not finite, or too short to have a direction)
 		[[nodiscard]] Vec3 Unit(Vec3 a_v) noexcept
 		{
@@ -429,6 +427,16 @@ namespace Crossfire
 			}
 		}
 
+		// one of this frame's projectiles killed: remembered (never touched again) and counted
+		template <class Count>
+		void KillEntry(Entry& a_e, Count& a_count)
+		{
+			a_e.ref->Kill();
+			a_e.killed = true;
+			gKilled.insert_or_assign(a_e.handle, gClock);
+			a_count.fetch_add(1, std::memory_order_relaxed);
+		}
+
 		// true when it burst where it went
 		// a_also: the other projectile's look, when it dies in the same clash (one burst shows both designs)
 		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg,
@@ -440,10 +448,7 @@ namespace Crossfire
 			}
 			if (a_kill) {
 				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg, a_also);
-				p->Kill();
-				a_e.killed = true;
-				gKilled.insert_or_assign(a_e.handle, gClock);
-				gStats.destroyed.fetch_add(1, std::memory_order_relaxed);
+				KillEntry(a_e, gStats.destroyed);
 				return burst;
 			}
 			if (a_after < a_before) {
@@ -872,10 +877,7 @@ namespace Crossfire
 				}
 				for (Entry* x : { &a, &b }) {
 					if (!x->ghost && x->ref) {
-						x->ref->Kill();
-						x->killed = true;
-						gKilled.insert_or_assign(x->handle, gClock);
-						gStats.destroyed.fetch_add(1, std::memory_order_relaxed);
+						KillEntry(*x, gStats.destroyed);
 					}
 				}
 				continue;
@@ -935,10 +937,7 @@ namespace Crossfire
 		if (e.killed || e.ghost || !e.ref) {
 			return;
 		}
-		e.ref->Kill();
-		e.killed = true;
-		gKilled.insert_or_assign(e.handle, gClock);
-		gStats.cut.fetch_add(1, std::memory_order_relaxed);
+		KillEntry(e, gStats.cut);
 	}
 
 	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config, const Info* a_also, bool a_design)

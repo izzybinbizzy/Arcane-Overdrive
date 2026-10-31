@@ -105,6 +105,16 @@ namespace Crossfire
 			ImGuiMCP::SetItemTooltip("%s", T(a_tip));
 		}
 
+		// a percent setting 0 - 300, saved when the slider is let go
+		void Percent(Edit& a_e, const char* a_label, float& a_value, const char* a_tip)
+		{
+			int        pct = static_cast<int>(std::lround(std::clamp(a_value, 0.0f, 300.0f)));
+			const bool moved = ImGuiMCP::SliderInt(T(a_label), &pct, 0, 300, "%d%%");
+			a_value = static_cast<float>(pct);
+			a_e.Dragged(moved);
+			ImGuiMCP::SetItemTooltip("%s", T(a_tip));
+		}
+
 		// an element's color in the table
 		[[nodiscard]] ImGuiMCP::ImVec4 ElementColor(std::size_t a_element)
 		{
@@ -208,14 +218,9 @@ namespace Crossfire
 			Check(e, "Steer into oncoming spells", c.steer, "A bolt bends toward an enemy spell coming at it that would nearly miss, so the two meet.");
 			layout.Beside();
 			Check(e, "Arrows too", c.lockArrows, "Arrows lock and steer like bolts.");
-			{
-				int        catchPct = static_cast<int>(std::lround(std::clamp(c.headOnCatch, 0.0f, 300.0f)));
-				const bool moved = ImGuiMCP::SliderInt(T("Head-on catch"), &catchPct, 0, 300, "%d%%");
-				c.headOnCatch = static_cast<float>(catchPct);
-				e.Dragged(moved);
-				ImGuiMCP::SetItemTooltip("%s", T("How far apart two bolts flying head on at each other still meet. 100% is the normal reach; "
-												 "lower, they must pass closer; higher, a wider miss still clashes. 0% turns it off."));
-			}
+			Percent(e, "Head-on catch", c.headOnCatch,
+				"How far apart two bolts flying head on at each other still meet. 100% is the normal reach; "
+				"lower, they must pass closer; higher, a wider miss still clashes. 0% turns it off.");
 
 			Heading(Icon::kFire, "Effects");
 			Check(e, "Bursts", c.explosions, "A destroyed projectile bursts where it was hit, with its own explosion.");
@@ -224,14 +229,9 @@ namespace Crossfire
 			Check(e, "Only harmless bursts", c.safeExplosionsOnly, "Skip a burst that would do more than show: damage, an enchantment, a push, something it spawns.");
 			Check(e, "Stand-in bursts", c.standInBursts, "A spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts the way its element's spells do.");
 			Check(e, "Clash designs", c.designs, "A clash's own effect, drawn for its kind of spell in the spell's color, on top of its burst.");
-			{
-				int        lightPct = static_cast<int>(std::lround(std::clamp(c.clashLight, 0.0f, 300.0f)));
-				const bool moved = ImGuiMCP::SliderInt(T("Clash light"), &lightPct, 0, 300, "%d%%");
-				c.clashLight = static_cast<float>(lightPct);
-				e.Dragged(moved);
-				ImGuiMCP::SetItemTooltip("%s", T("The light a clash casts, in the spell's color, flaring and fading with it: it lights the ground "
-												 "and the clash's smoke and pieces. 0% turns it off."));
-			}
+			Percent(e, "Clash light", c.clashLight,
+				"The light a clash casts, in the spell's color, flaring and fading with it: it lights the ground "
+				"and the clash's smoke and pieces. 0% turns it off.");
 			Check(e, "Particle lights", c.particleLights,
 				"The burst and its flying pieces light their surroundings as they scatter (ENB's or Community Shaders' particle lights; "
 				"nothing on Vanilla).");

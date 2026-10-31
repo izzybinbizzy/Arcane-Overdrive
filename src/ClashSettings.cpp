@@ -12,6 +12,8 @@
 
 #include "ClashShared.h"
 #include "Guarded.h"
+#include "IniText.h"
+#include "Plugin.h"
 
 namespace Crossfire
 {
@@ -77,18 +79,16 @@ namespace Crossfire
 				return out;
 			}
 			for (std::filesystem::directory_iterator it(kPatches, ec), end; !ec && it != end; it.increment(ec)) {
-				auto ext = Core::PathText(it->path().extension());
-				std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				if (ext == ".ini" && it->is_regular_file(ec)) {
+				if (IniText::SameText(Core::PathText(it->path().extension()), ".ini") && it->is_regular_file(ec)) {
 					out.push_back(it->path());
 				}
 			}
-			std::ranges::sort(out, [](const auto& a, const auto& b) {
-				auto x = Core::PathText(a.filename()), y = Core::PathText(b.filename());
-				std::ranges::transform(x, x.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				std::ranges::transform(y, y.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				return x < y;
-			});
+			const auto lower = [](const std::filesystem::path& a_p) {
+				auto s = Core::PathText(a_p.filename());
+				std::ranges::transform(s, s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				return s;
+			};
+			std::ranges::sort(out, {}, lower);
 			return out;
 		}
 
@@ -131,9 +131,7 @@ namespace Crossfire
 		// LoadSettings): the menu's writer writes only its own sections, so a save carries these over as they were
 		[[nodiscard]] std::string RuleSections(const std::filesystem::path& a_path)
 		{
-			const auto same = [](std::string_view a_a, std::string_view a_b) {
-				return std::ranges::equal(a_a, a_b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
-			};
+			using IniText::SameText;
 			std::ifstream in(a_path, std::ios::binary);
 			std::string   out;
 			std::string   line;
@@ -143,7 +141,7 @@ namespace Crossfire
 				if (start != std::string::npos && line[start] == '[') {
 					const auto        end = line.find(']', start);
 					const std::string name = line.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
-					keep = same(name, "Elements") || same(name, "Reactions") || same(name, "Exclude");
+					keep = SameText(name, "Elements") || SameText(name, "Reactions") || SameText(name, "Exclude");
 				}
 				if (keep) {
 					out += line;
@@ -155,31 +153,9 @@ namespace Crossfire
 
 		void Save(const Core::Config& a_config)
 		{
-			const std::filesystem::path path(kSettings), temp(std::string(kSettings) + ".tmp");
+			const std::filesystem::path path(kSettings);
 			const std::string           rules = RuleSections(path);
-			{
-				std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-				if (!out) {
-					SKSE::log::warn("settings: {} could not be written", Core::PathText(temp));
-					return;
-				}
-				out << Core::WriteSettings(a_config);
-				if (!rules.empty()) {
-					out << '\n'
-						<< rules;
-				}
-				if (!out.flush()) {
-					SKSE::log::warn("settings: {} could not be written", Core::PathText(temp));
-					return;
-				}
-			}
-			// written whole, then swapped in: a crash mid-write cannot leave half a file
-			std::error_code ec;
-			std::filesystem::rename(temp, path, ec);
-			if (ec) {
-				SKSE::log::warn("settings: {} could not be replaced ({})", kSettings, ec.message());
-				std::filesystem::remove(temp, ec);
-			}
+			Plugin::WriteWhole(path, Core::WriteSettings(a_config) + (rules.empty() ? std::string() : '\n' + rules), std::ios::binary);
 		}
 	}
 

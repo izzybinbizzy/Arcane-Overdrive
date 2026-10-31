@@ -9,7 +9,7 @@
 //                       full bar back; then Overdrive counting down with an alarm, and the burnout draining
 //   the Heat bar        the heat in four pieces (Warm, Hot, Overheating at the default stages), a soft flow at Warm and Hot, a
 //                       pulse at Overheating, the warning colour and an alarm in the red zone; it drains with Overdrive
-// No color is sent (his word above). A menu choice beside TrueHUD's special bar (TrueHud.cpp); off by default.
+// No color is sent: Reticle Arcs takes none from add-ons yet. A menu choice beside TrueHUD's special bar (TrueHud.cpp); off by default.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN

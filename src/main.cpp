@@ -1,4 +1,4 @@
-// Spell Mastery Heat - SKSE plugin
+// Arcane Overdrive - SKSE plugin (SpellMasteryHeat.dll, its first name)
 // Copyright (C) 2026 izzydoingit
 //
 // This program is free software: you can redistribute it and/or modify it under the terms of the GNU
@@ -100,6 +100,12 @@ namespace
 			func = vtbl.write_vfunc(0x00, thunk);
 		}
 	};
+
+	template <class... T>
+	void InstallPerksAdjusted()
+	{
+		(PerksAdjusted<T>::Install(), ...);
+	}
 
 	// ------------------------------------------------------------------ each explosion and hazard as it is made
 	// Initialize (SE/AE 0xA2, VR 0xA3) runs once as one is made: it is noted, and Overload.cpp grows the player's to the size
@@ -285,22 +291,11 @@ namespace
 	{
 		Plugin::LoadSettings();
 		PlayerUpdate::Install();
-		PerksAdjusted<RE::ValueModifierEffect>::Install();
-		PerksAdjusted<RE::DualValueModifierEffect>::Install();
-		PerksAdjusted<RE::AbsorbEffect>::Install();
-		PerksAdjusted<RE::AccumulatingValueModifierEffect>::Install();
-		PerksAdjusted<RE::PeakValueModifierEffect>::Install();
-		PerksAdjusted<RE::TargetValueModifierEffect>::Install();
-		// the rest of "All harmful spell effects": fear, frenzy, calm (their magnitude is the level they work up to), paralysis,
-		// stagger, disarm, turn undead, banish
-		PerksAdjusted<RE::DemoralizeEffect>::Install();
-		PerksAdjusted<RE::FrenzyEffect>::Install();
-		PerksAdjusted<RE::CalmEffect>::Install();
-		PerksAdjusted<RE::ParalysisEffect>::Install();
-		PerksAdjusted<RE::StaggerEffect>::Install();
-		PerksAdjusted<RE::DisarmEffect>::Install();
-		PerksAdjusted<RE::TurnUndeadEffect>::Install();
-		PerksAdjusted<RE::BanishEffect>::Install();
+		// the value modifiers, then the rest of "All harmful spell effects": fear, frenzy, calm, paralysis, stagger, disarm, turn
+		// undead, banish. A fear spell's level cap is checked before this, so the bonus never raises it (measured in game)
+		InstallPerksAdjusted<RE::ValueModifierEffect, RE::DualValueModifierEffect, RE::AbsorbEffect, RE::AccumulatingValueModifierEffect,
+			RE::PeakValueModifierEffect, RE::TargetValueModifierEffect, RE::DemoralizeEffect, RE::FrenzyEffect, RE::CalmEffect,
+			RE::ParalysisEffect, RE::StaggerEffect, RE::DisarmEffect, RE::TurnUndeadEffect, RE::BanishEffect>();
 		Made<RE::Explosion>::Install();
 		Made<RE::Hazard>::Install();
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
@@ -338,7 +333,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse);
 	// the wrong game: loaded but idle - a false here makes SKSE add its own "exit game?" box over the guard's
-	if (!RuntimeGuard::RightGame("Arcane Overdrive", "Arcane Overdrive", "")) {
+	if (!RuntimeGuard::RightGame("Arcane Overdrive", "Arcane Overdrive", "Arcane Overdrive - VR")) {
 		return true;
 	}
 	SKSE::log::info("Arcane Overdrive {} loading", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string());
@@ -366,10 +361,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 					break;
 				}
 				// every meter belongs to the world going away; hand lights go back as they were found
-				Plugin::ResetAll();
-				Plugin::ReleaseHands();
-				Plugin::ReleaseOverload();
-				Plugin::ReleaseMarks();
+				Plugin::ReleaseAll();
 				Plugin::ForgetTrueHud();
 				Plugin::ResetFrameCost();
 				break;

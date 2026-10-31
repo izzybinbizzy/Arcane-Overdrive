@@ -60,7 +60,11 @@ namespace Crossfire
 			if (action == "settings") {
 				const auto  c = MenuCopy();
 				const auto& s = c.struggle;
-				return json{ { "ok", true }, { "enabled", c.enabled }, { "who", c.who }, { "ignoreAllies", c.ignoreAllies },
+				json        all = json::object();
+				for (const auto& [key, value] : Core::SettingValues(c)) {
+					all[std::string(key)] = value;
+				}
+				return json{ { "ok", true }, { "all", std::move(all) }, { "enabled", c.enabled }, { "who", c.who }, { "ignoreAllies", c.ignoreAllies },
 					{ "radiusBonus", c.radiusBonus }, { "overpowerRatio", c.overpowerRatio }, { "weakenSurvivor", c.weakenSurvivor },
 					{ "boltsMeet", c.boltsMeet }, { "explosions", c.explosions }, { "safeExplosionsOnly", c.safeExplosionsOnly },
 					{ "standInBursts", c.standInBursts }, { "modEvents", c.modEvents }, { "log", c.debugLog }, { "struggles", s.enabled },

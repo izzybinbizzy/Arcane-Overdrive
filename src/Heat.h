@@ -164,12 +164,18 @@ namespace Heat
 		return std::clamp(8.0f * std::sqrt(cost / 50.0f), 4.0f, 24.0f);
 	}
 
-	[[nodiscard]] inline Stage StageAt(const Tuning& a_t, float a_heat) noexcept
+	// the Heat where Warm, Hot and Overheating start: in order, each below full (the menu cannot set them otherwise; a
+	// hand-edited file could)
+	[[nodiscard]] inline std::array<float, 3> ThresholdsOf(const Tuning& a_t) noexcept
 	{
-		// the thresholds in order, each below full (the menu cannot set them otherwise; a hand-edited file could)
 		const float warm = std::clamp(a_t.at[0], 1.0f, kFull - 3.0f);
 		const float hot = std::clamp(a_t.at[1], warm + 1.0f, kFull - 2.0f);
-		const float overheating = std::clamp(a_t.at[2], hot + 1.0f, kFull - 1.0f);
+		return { warm, hot, std::clamp(a_t.at[2], hot + 1.0f, kFull - 1.0f) };
+	}
+
+	[[nodiscard]] inline Stage StageAt(const Tuning& a_t, float a_heat) noexcept
+	{
+		const auto [warm, hot, overheating] = ThresholdsOf(a_t);
 		return a_heat >= overheating ? Stage::kOverheating : a_heat >= hot ? Stage::kHot :
 		                                                 a_heat >= warm    ? Stage::kWarm :
 		                                                                     Stage::kCold;
@@ -224,23 +230,19 @@ namespace Heat
 	{
 		bool healingAndWards{ false };
 		bool stavesAndScrolls{ false };
+		bool operator==(const Counts&) const = default;
 	};
+
+	// a spell counts; a staff or a scroll when they are switched on; a power, shout or anything else never
+	[[nodiscard]] inline bool KindCounts(SpellFacts::Kind a_kind, const Counts& a_counts) noexcept
+	{
+		return a_kind == SpellFacts::Kind::kSpell ||
+		       ((a_kind == SpellFacts::Kind::kStaff || a_kind == SpellFacts::Kind::kScroll) && a_counts.stavesAndScrolls);
+	}
 
 	[[nodiscard]] inline bool BuildsHeat(const SpellFacts& a_spell, const Counts& a_counts) noexcept
 	{
-		switch (a_spell.kind) {
-		case SpellFacts::Kind::kSpell:
-			break;
-		case SpellFacts::Kind::kStaff:
-		case SpellFacts::Kind::kScroll:
-			if (!a_counts.stavesAndScrolls) {
-				return false;
-			}
-			break;
-		default:
-			return false;
-		}
-		return !a_spell.healingOrWard || a_counts.healingAndWards;
+		return KindCounts(a_spell.kind, a_counts) && (!a_spell.healingOrWard || a_counts.healingAndWards);
 	}
 
 	// ------------------------------------------------------------------ the two bars
@@ -461,12 +463,10 @@ namespace Heat
 		}
 		[[nodiscard]] static float StageThreshold(const Tuning& a_t, Stage a_stage) noexcept
 		{
-			for (float h = 0.0f; h <= kFull; h += 0.5f) {
-				if (StageAt(a_t, h) == a_stage) {
-					return h;
-				}
-			}
-			return kFull;
+			const auto at = ThresholdsOf(a_t);
+			const auto i = static_cast<std::size_t>(a_stage);
+			return i == 0 ? 0.0f : i <= at.size() ? at[i - 1] :
+			                                        kFull;
 		}
 		// full = the bar the HUD shows (the shared bar, or the last school's), so READY never shows over a partly filled bar
 		[[nodiscard]] bool Full(const Tuning& a_t) const noexcept { return _charge[Index(a_t, _last)] >= kFull; }

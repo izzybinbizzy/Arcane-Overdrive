@@ -18,6 +18,26 @@
 
 namespace Plugin
 {
+	bool WriteWhole(const std::filesystem::path& a_path, std::string_view a_text, std::ios::openmode a_mode)
+	{
+		auto            tmp = a_path;
+		std::error_code ec;
+		tmp += ".tmp";
+		bool ok = false;
+		{
+			std::ofstream out(tmp, a_mode | std::ios::trunc);
+			ok = out && out.write(a_text.data(), static_cast<std::streamsize>(a_text.size())) && out.flush();
+		}
+		if (!ok) {
+			SKSE::log::warn("settings: {} could not be written", a_path.filename().string());
+		} else if (std::filesystem::rename(tmp, a_path, ec); ec) {
+			SKSE::log::warn("settings: {} could not be replaced ({})", a_path.filename().string(), ec.message());
+			ok = false;
+		}
+		std::filesystem::remove(tmp, ec);  // nothing left behind when the move failed
+		return ok;
+	}
+
 	namespace
 	{
 		std::mutex  gLock;
@@ -33,28 +53,7 @@ namespace Plugin
 		}
 
 		// written beside the file, then moved over it: a crash or a full disk mid-write leaves the old settings, never half a file
-		bool WriteFile(const char* a_path, const std::string& a_text)
-		{
-			const std::string tmp = std::string(a_path) + ".tmp";
-			std::ofstream     out(tmp, std::ios::trunc);
-			if (!out) {
-				SKSE::log::warn("settings: {} could not be written", a_path);
-				return false;
-			}
-			out << a_text;
-			out.close();
-			std::error_code ec;
-			bool            ok = true;
-			if (!out) {
-				SKSE::log::warn("settings: {} could not be written", a_path);
-				ok = false;
-			} else if (std::filesystem::rename(tmp, a_path, ec); ec) {
-				SKSE::log::warn("settings: {} could not be replaced ({})", a_path, ec.message());
-				ok = false;
-			}
-			std::filesystem::remove(tmp, ec);  // nothing left behind when the move failed
-			return ok;
-		}
+		bool WriteFile(const char* a_path, const std::string& a_text) { return WriteWhole(a_path, a_text, std::ios::out); }
 
 		// a file's whole text, or none
 		[[nodiscard]] std::optional<std::string> FileText(const char* a_path)

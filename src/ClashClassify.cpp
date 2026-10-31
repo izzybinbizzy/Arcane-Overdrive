@@ -13,6 +13,7 @@
 // with no element is Force"; an arrow is Physical unless its enchantment has an element (Core::Classify).
 
 #include "ClashShared.h"
+#include "Plugin.h"
 
 namespace Crossfire
 {
@@ -59,22 +60,30 @@ namespace Crossfire
 			}
 		}
 
-		[[nodiscard]] Core::Element ElementOf(const RE::EffectSetting* a_effect, bool a_voice, bool a_cone)
+		// the effect's keywords' editor IDs (the game keeps every keyword's), at most 32
+		struct Tags
 		{
 			std::array<std::string_view, 32> names{};
-			std::size_t                      count = 0;
-			std::string_view                 resist;
-			if (a_effect) {
-				for (std::uint32_t i = 0; a_effect->keywords && i < a_effect->numKeywords && count < names.size(); ++i) {
+			std::size_t                      count{ 0 };
+
+			explicit Tags(const RE::EffectSetting* a_effect)
+			{
+				for (std::uint32_t i = 0; a_effect && a_effect->keywords && i < a_effect->numKeywords && count < names.size(); ++i) {
 					if (const auto* kw = a_effect->keywords[i]) {
 						if (const char* id = kw->GetFormEditorID(); id && *id) {
 							names[count++] = id;
 						}
 					}
 				}
-				resist = ResistName(a_effect->data.resistVariable);
 			}
-			const Core::MagicFacts facts{ std::span<const std::string_view>(names.data(), count), resist, a_voice, a_cone };
+			[[nodiscard]] std::span<const std::string_view> Span() const { return { names.data(), count }; }
+		};
+
+		[[nodiscard]] Core::Element ElementOf(const RE::EffectSetting* a_effect, bool a_voice, bool a_cone)
+		{
+			const Tags             tags(a_effect);
+			const std::string_view resist = a_effect ? ResistName(a_effect->data.resistVariable) : std::string_view();
+			const Core::MagicFacts facts{ tags.Span(), resist, a_voice, a_cone };
 			return Core::Classify(facts, Live().keywords);
 		}
 
@@ -108,19 +117,11 @@ namespace Crossfire
 		}
 
 		// the clash design: from the effect's tags, then words in the effect's, spell's and projectile's names and editor
-		// IDs (where the game keeps them) and the projectile's model file, then its element, then its light's hue
+		// IDs (EditorIdOf) and the projectile's model file, then its element, then its light's hue
 		[[nodiscard]] Core::Look LookFor(const RE::EffectSetting* a_effect, const RE::MagicItem* a_spell, const RE::BGSProjectile* a_base,
 			const Info& a_info)
 		{
-			std::array<std::string_view, 32> tags{};
-			std::size_t                      count = 0;
-			for (std::uint32_t i = 0; a_effect && a_effect->keywords && i < a_effect->numKeywords && count < tags.size(); ++i) {
-				if (const auto* kw = a_effect->keywords[i]) {
-					if (const char* id = kw->GetFormEditorID(); id && *id) {
-						tags[count++] = id;
-					}
-				}
-			}
+			const Tags  tags(a_effect);
 			std::string words;
 			const auto  add = [&](std::string_view a_text) {
 				if (!a_text.empty()) {
@@ -140,26 +141,12 @@ namespace Crossfire
 				add(EditorIdOf(a_base));
 				add(Core::FileOf(text(a_base->GetModel())));  // the file only: nearly every spell's folder is "Magic"
 			}
-			const Core::LookFacts facts{ a_info.element, std::span<const std::string_view>(tags.data(), count), words, false, a_info.absorb,
+			const Core::LookFacts facts{ a_info.element, tags.Span(), words, false, a_info.absorb,
 				a_info.resist == RE::ActorValue::kResistMagic, a_info.light };
 			return Core::LookOf(facts);
 		}
 
-		[[nodiscard]] const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item)
-		{
-			if (!a_item) {
-				return nullptr;
-			}
-			if (const auto* e = a_item->GetCostliestEffectItem(); e && e->baseEffect) {
-				return e->baseEffect;
-			}
-			for (const auto* e : a_item->effects) {
-				if (e && e->baseEffect) {
-					return e->baseEffect;
-				}
-			}
-			return nullptr;
-		}
+		using Plugin::MainEffect;
 
 		[[nodiscard]] bool Hostile(const RE::MagicItem* a_item, const RE::EffectSetting* a_effect)
 		{
@@ -266,7 +253,6 @@ namespace Crossfire
 				break;
 			}
 			info.stream = Core::StreamOf(info.kind, concentration, voice);  // the switches are read live, not cached here
-			(void)a_base;
 			return info;
 		}
 	}

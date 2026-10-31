@@ -420,33 +420,29 @@ namespace Plugin
 
 		void PutBack()
 		{
-			for (auto it = gNodes.begin(); it != gNodes.end();) {
-				auto& g = it->second;
-				if (gFrame - g.frame > kKeepFrames) {
-					if (g.node) {
-						if (g.node->local.scale == g.written) {
-							g.node->local.scale = g.base;
-						}
-						if (g.culled) {
-							g.node->SetAppCulled(false);
-						}
-					}
-					it = gNodes.erase(it);
-				} else {
-					++it;
+			std::erase_if(gNodes, [](auto& a_kv) {
+				auto& g = a_kv.second;
+				if (gFrame - g.frame <= kKeepFrames) {
+					return false;
 				}
-			}
-			for (auto it = gControllers.begin(); it != gControllers.end();) {
-				auto& s = it->second;
-				if (gFrame - s.frame > kKeepFrames) {
-					if (s.ctrl && s.ctrl->frequency == s.written) {
-						Retime(s.ctrl.get(), s.base);
-					}
-					it = gControllers.erase(it);
-				} else {
-					++it;
+				if (g.node && g.node->local.scale == g.written) {
+					g.node->local.scale = g.base;
 				}
-			}
+				if (g.node && g.culled) {
+					g.node->SetAppCulled(false);
+				}
+				return true;
+			});
+			std::erase_if(gControllers, [](auto& a_kv) {
+				auto& s = a_kv.second;
+				if (gFrame - s.frame <= kKeepFrames) {
+					return false;
+				}
+				if (s.ctrl && s.ctrl->frequency == s.written) {
+					Retime(s.ctrl.get(), s.base);
+				}
+				return true;
+			});
 		}
 
 		// the player's spell projectiles this frame (PlayerSpellsNow); the lists are kept from frame to frame so a frame allocates nothing
@@ -653,7 +649,7 @@ namespace Plugin
 					++gFlares;
 				}
 				// a spit of sparks when the red zone swells the hand's spell or blinks it out, once per step of it
-				const auto step = static_cast<std::uint32_t>(static_cast<std::int64_t>(std::floor(gTime * 12.0f)) & 0xFFFFFFFF);
+				const auto step = Overload::Step(gTime, 12.0);
 				if (art && a_s.redSparks && gWild > 0.0f && step != gSparkTick[hand]) {
 					gSparkTick[hand] = step;
 					if ((wild.size > 1.0f || !wild.shows) && gTime - gSparkAt[hand] >= kSparkGap &&

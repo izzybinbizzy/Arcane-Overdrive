@@ -39,8 +39,6 @@ namespace Crossfire
 	{
 		using Core::Vec3;
 
-		Vec3 V(const RE::NiPoint3& a) { return { a.x, a.y, a.z }; }
-
 		constexpr float kRadians = 0.017453292f;
 		constexpr float kLaunchReach = 300.0f;     // units a bolt may have flown and still count as just launched
 		constexpr float kAimedAlready = 0.99996f;  // cos 0.5 degrees: a beam already pointing this close is not turned again

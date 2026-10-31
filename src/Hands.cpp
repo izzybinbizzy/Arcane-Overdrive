@@ -49,11 +49,17 @@ namespace Plugin
 		std::uint32_t                               gFrame = 1;
 		std::unordered_map<RE::NiPointLight*, Seen> gLights;
 		Own                                         gOwn[2];
-		RE::NiPointer<RE::NiPointLight>             gMaster;
 		std::atomic<std::size_t>                    gScaled{ 0 }, gFrozen{ 0 }, gOwnCount{ 0 };
 		std::atomic<float>                          gFactor[2]{ 1.0f, 1.0f };
 
-		RE::ShadowSceneNode* Scene() { return RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0]; }
+		using LightWords::Scene;
+
+		// x and y are a light's reach, z its size
+		void SetReach(RE::NiLight::LIGHT_RUNTIME_DATA& a_data, float a_reach)
+		{
+			a_data.radius.x = a_reach;
+			a_data.radius.y = a_reach;
+		}
 
 		void Restore(Seen& a_seen)
 		{
@@ -63,9 +69,7 @@ namespace Plugin
 			auto& data = a_seen.light->GetLightRuntimeData();
 			data.fade = a_seen.fade.Restore(data.fade);
 			if (a_seen.radius.Written()) {
-				const float r = a_seen.radius.Restore(data.radius.x);
-				data.radius.x = r;
-				data.radius.y = r;
+				SetReach(data, a_seen.radius.Restore(data.radius.x));
 			}
 		}
 
@@ -82,25 +86,10 @@ namespace Plugin
 			}
 			auto& data = a_light->GetLightRuntimeData();
 			data.fade = seen.fade.Apply(data.fade, a_factor);
-			const float r = seen.radius.Apply(data.radius.x, a_factor);
-			data.radius.x = r;  // x and y are the reach, z is the size
-			data.radius.y = r;
+			SetReach(data, seen.radius.Apply(data.radius.x, a_factor));
 		}
 
 		// ---- our own light (Hand glow)
-		RE::NiPointLight* CloneMaster()
-		{
-			if (!gMaster) {
-				const RE::NiPointer<RE::NiPointLight> fresh(RE::NiPointLight::Create());
-				auto*                                 clone = fresh ? netimmerse_cast<RE::NiPointLight*>(fresh->Clone()) : nullptr;
-				if (!clone) {
-					return nullptr;
-				}
-				gMaster.reset(clone);
-			}
-			return netimmerse_cast<RE::NiPointLight*>(gMaster->Clone());
-		}
-
 		void DropOwn(Own& a_own)
 		{
 			if (a_own.registered) {
@@ -137,7 +126,7 @@ namespace Plugin
 			if (!a_own.light || a_own.node != a_node || a_own.light->parent != a_node) {
 				DropOwn(a_own);
 				auto*                           scene = Scene();
-				RE::NiPointer<RE::NiPointLight> light(CloneMaster());
+				RE::NiPointer<RE::NiPointLight> light(LightWords::Clone());
 				if (!scene || !light) {
 					return;
 				}
@@ -148,18 +137,7 @@ namespace Plugin
 				a_node->AttachChild(light.get(), true);
 				RE::NiUpdateData update{};
 				light->Update(update);
-				RE::ShadowSceneNode::LIGHT_CREATE_PARAMS params{};
-				params.dynamic = true;
-				params.shadowLight = false;
-				params.portalStrict = true;
-				params.affectLand = true;
-				params.affectWater = true;
-				params.neverFades = true;
-				params.fov = 90.0f;
-				params.falloff = 1.0f;
-				params.nearDistance = 5.0f;
-				params.depthBias = 1.0f;
-				auto* registered = scene->AddLight(light.get(), params);
+				auto* registered = LightWords::Register(light.get());
 				if (!registered) {
 					a_node->DetachChild(light.get());
 					return;
@@ -174,8 +152,7 @@ namespace Plugin
 			const float reach = kOwnReach * a_factor;
 			data.diffuse = ColorOf(a_element);
 			data.fade = fade;
-			data.radius.x = reach;
-			data.radius.y = reach;
+			SetReach(data, reach);
 			if (LightWords::InverseSquare()) {
 				LightWords::Write(a_own.light.get(), fade, reach);
 			}

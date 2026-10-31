@@ -23,6 +23,9 @@ namespace Overload
 		kBurnout
 	};
 
+	// smoothstep: 0 at 0, 1 at 1, no corner at either end
+	[[nodiscard]] constexpr float Smooth(float a_x) noexcept { return a_x * a_x * (3.0f - 2.0f * a_x); }
+
 	// the spells' own size, synced to the Overdrive bar: 1 empty, climbing slowly at first to 1 + growth when it is full
 	// (double at the default) and held there through Overdrive; 1 in the burnout, which sputters instead
 	[[nodiscard]] inline float Growth(Phase a_phase, float a_fill01, float a_growth) noexcept
@@ -35,7 +38,7 @@ namespace Overload
 		case Phase::kBurnout:
 			return 1.0f;
 		default:
-			return 1.0f + g * f * f * (3.0f - 2.0f * f);
+			return 1.0f + g * Smooth(f);
 		}
 	}
 
@@ -69,6 +72,19 @@ namespace Overload
 		return a_x;
 	}
 
+	// which of a_perSecond steps a second a_time falls in (a non-finite time is step 0)
+	[[nodiscard]] inline std::uint32_t Step(float a_time, double a_perSecond) noexcept
+	{
+		const double t = std::isfinite(a_time) ? static_cast<double>(a_time) : 0.0;
+		return static_cast<std::uint32_t>(static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(t * a_perSecond))) & 0xFFFFFFFFu);
+	}
+
+	// a step's roll, 0 to 1: the same step, seed and salt always roll the same
+	[[nodiscard]] constexpr float Roll(std::uint32_t a_step, std::uint32_t a_seed, std::uint32_t a_salt = 0) noexcept
+	{
+		return static_cast<float>(Hash(a_step * 2654435761u ^ a_seed ^ a_salt) & 0xFFFFu) / 65535.0f;
+	}
+
 	struct Wild
 	{
 		float size{ 1.0f };   // times the size it has
@@ -85,11 +101,10 @@ namespace Overload
 		if (w <= 0.0f) {
 			return {};
 		}
-		const double t = std::isfinite(a_time) ? static_cast<double>(a_time) : 0.0;
-		const auto   tick = static_cast<std::uint32_t>(static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(t * 12.0))) & 0xFFFFFFFFu);
-		const auto   roll = [&](std::uint32_t a_salt) { return static_cast<float>(Hash(tick * 2654435761u ^ a_seed ^ a_salt) & 0xFFFFu) / 65535.0f; };
-		const float  pick = roll(0x1F3Du), amount = roll(0x7A11u), pace = roll(0xC0DEu), out = roll(0x5EEDu);
-		Wild         wl;
+		const auto  tick = Step(a_time, 12.0);
+		const float pick = Roll(tick, a_seed, 0x1F3Du), amount = Roll(tick, a_seed, 0x7A11u), pace = Roll(tick, a_seed, 0xC0DEu),
+					out = Roll(tick, a_seed, 0x5EEDu);
+		Wild        wl;
 		wl.size = pick < 0.3f ? 1.0f + 0.3f * w * amount : 1.0f - 0.12f * w * amount;
 		wl.speed = pace < 0.5f ? 1.0f + 1.2f * w * amount : std::max(0.15f, 1.0f - 0.6f * w * amount);
 		wl.shows = out >= 0.1f * w;
@@ -108,7 +123,7 @@ namespace Overload
 		for (std::size_t i = 1; i < kKeys.size(); ++i) {
 			if (a_since <= kKeys[i].first) {
 				const float u = (a_since - kKeys[i - 1].first) / (kKeys[i].first - kKeys[i - 1].first);
-				return kKeys[i - 1].second + (kKeys[i].second - kKeys[i - 1].second) * u * u * (3.0f - 2.0f * u);
+				return kKeys[i - 1].second + (kKeys[i].second - kKeys[i - 1].second) * Smooth(u);
 			}
 		}
 		return 1.0f;
@@ -146,22 +161,19 @@ namespace Overload
 		if (left <= 0.05f) {
 			return true;
 		}
-		const double t = std::isfinite(a_time) ? static_cast<double>(a_time) : 0.0;
-		const auto   tick = static_cast<std::uint32_t>(static_cast<std::uint64_t>(static_cast<std::int64_t>(std::floor(t * 16.0))) & 0xFFFFFFFFu);
-		const float  roll = static_cast<float>(Hash(tick * 2654435761u ^ a_seed) & 0xFFFFu) / 65535.0f;
-		return roll >= 0.8f * left;
+		return Roll(Step(a_time, 16.0), a_seed) >= 0.8f * left;
 	}
 
 	// a light on a sputtering spell: a dim ember while the spell is out
 	[[nodiscard]] constexpr float LightWhen(bool a_shows) noexcept { return a_shows ? 1.0f : 0.12f; }
 
-	// HIS ANSWER 2026-10-18 (checklist 28 (c)): "at burnout the hand light dips, then comes back" - the hand lights drop to
+	// at burnout the hand lights dip, then come back: they drop to
 	// kDipFloor as the burnout starts and ease back to whole as the cooldown runs out (a_left01 = the cooldown left, 1 at its
 	// start; smoothstep, so the return has no corner). With the sputter on, the two multiply.
 	inline constexpr float     kDipFloor = 0.35f;
 	[[nodiscard]] inline float BurnoutDip(float a_left01) noexcept
 	{
 		const float back = 1.0f - (std::isfinite(a_left01) ? std::clamp(a_left01, 0.0f, 1.0f) : 0.0f);  // 0 at the start, 1 at the end
-		return kDipFloor + (1.0f - kDipFloor) * back * back * (3.0f - 2.0f * back);
+		return kDipFloor + (1.0f - kDipFloor) * Smooth(back);
 	}
 }

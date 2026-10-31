@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Crossfire::Core
@@ -222,7 +223,7 @@ namespace Crossfire::Core
 	// how big a cone is once it has gone `a_travelled` units
 	[[nodiscard]] float ConeRadius(float a_initial, float a_travelled, float a_tangent) noexcept;
 
-	// ------------------------------------------------------------------ the per-frame decisions Clash.cpp makes
+	// ------------------------------------------------------------------ the per-frame decisions ClashPass.cpp makes
 	struct Config;
 
 	// a projectile's size for Crossfire: its own collision radius scaled, plus the aim assist, within the limits
@@ -361,7 +362,7 @@ namespace Crossfire::Core
 	// ------------------------------------------------------------------ spell struggles
 	// Two hostile streams (sprays, held beams, breath) that meet lock together, and the stronger caster pushes the
 	// meeting point back until it breaks through. A struggle belongs to a pair of shooters, never to projectiles: a spray
-	// is hundreds of particles that live a moment each, and a beam may be launched again. What is here decides; Struggle.cpp
+	// is hundreds of particles that live a moment each, and a beam may be launched again. What is here decides; ClashStruggle.cpp
 	// reads the actors, feeds this, and carries out what a step says.
 	struct StruggleConfig;
 
@@ -743,6 +744,9 @@ namespace Crossfire::Core
 	// Reads an ini's text into `a_config` - only what the text sets; a line it cannot use is skipped and said in
 	// `a_warnings` (with its line number). Out-of-range numbers are clamped (and said). Never throws on bad text.
 	void ParseIni(std::string_view a_text, Config& a_config, std::vector<std::string>& a_warnings);
+
+	// every setting the file holds with its value now (an on / off one as 0 / 1), in the file's order
+	[[nodiscard]] std::vector<std::pair<std::string_view, float>> SettingValues(const Config& a_config);
 
 	// the settings file the menu writes: [General] .. [Debug], every value, nothing from the rules. Every key is unique
 	// across the sections, since RangeOf finds a setting by its key alone.

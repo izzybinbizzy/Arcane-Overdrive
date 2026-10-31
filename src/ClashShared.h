@@ -10,7 +10,11 @@
 
 namespace Crossfire
 {
-	// ------------------------------------------------------------------ Settings.cpp: the files
+	// a game point as the core's Vec3, and back
+	[[nodiscard]] inline Core::Vec3   V(const RE::NiPoint3& a_p) noexcept { return { a_p.x, a_p.y, a_p.z }; }
+	[[nodiscard]] inline RE::NiPoint3 N(Core::Vec3 a_v) noexcept { return { a_v.x, a_v.y, a_v.z }; }
+
+	// ------------------------------------------------------------------ ClashSettings.cpp: the files
 	//
 	// Read in this order, each on top of the last: SpellMasteryHeat Clash Rules.ini (shipped: elements, reactions,
 	// exclusions), every SpellMasteryHeat Clash\*.ini (patches, alphabetical), SpellMasteryHeat Clashes.ini (the menu's). Live() is the game's main thread's own copy;
@@ -29,7 +33,7 @@ namespace Crossfire
 	[[nodiscard]] std::vector<std::string> LoadNotes();                                               // any thread: what the last load said (warnings, files read)
 	[[nodiscard]] bool                     Excluded(const RE::TESForm* a_form);                       // main thread
 
-	// ------------------------------------------------------------------ Classify.cpp: what a projectile is to Crossfire
+	// ------------------------------------------------------------------ ClashClassify.cpp: what a projectile is to Crossfire
 	struct Info
 	{
 		bool                     eligible{ false };  // false: Crossfire never touches it
@@ -64,7 +68,7 @@ namespace Crossfire
 	[[nodiscard]] bool              ClashArtReady();                        // the art has been looked up (data load)
 	[[nodiscard]] RE::SpellItem*    FearSpell();                            // null when none was found
 
-	// ------------------------------------------------------------------ Clash.cpp: the pass, once a frame
+	// ------------------------------------------------------------------ ClashPass.cpp: the pass, once a frame
 	void Update(float a_delta);  // main thread, from the player's update
 	void Reset();                // a save is loading, or a new game: every handle we hold is meaningless now
 
@@ -85,7 +89,7 @@ namespace Crossfire
 	bool LockAtLaunch(RE::Projectile* a_p, const Info& a_info, RE::Actor* a_shooter, const Core::Config& a_cfg);  // a bolt the pass first sees
 	void LockBeam(RE::Projectile* a_p);                                                                           // a one-shot bolt, as it picks its target
 
-	// one stream projectile of this frame's pass, for Struggle.cpp; `entry` stays valid until the end of the pass
+	// one stream projectile of this frame's pass, for ClashStruggle.cpp; `entry` stays valid until the end of the pass
 	struct StreamRef
 	{
 		std::size_t                    entry{ 0 };
@@ -124,7 +128,7 @@ namespace Crossfire
 	// feet, turned to her heading and tinted as a clash would; queued for the main thread. False: no such look
 	bool ShowDesign(std::string_view a_look, std::string_view a_pair, std::optional<Core::Rgb> a_color, float a_ahead, float a_up);
 
-	// ------------------------------------------------------------------ Struggle.cpp: streams that lock (main thread)
+	// ------------------------------------------------------------------ ClashStruggle.cpp: streams that lock (main thread)
 	namespace Struggles
 	{
 		[[nodiscard]] bool Reeling(std::uint32_t a_shooter);  // it lost a struggle a moment ago: its streams fizzle
@@ -165,7 +169,7 @@ namespace Crossfire
 	void RegisterMenu();
 	void RequestBarPreview();  // any thread: the struggle bar's sample shows for a few seconds (the menu's button, DevBench)
 
-	// ------------------------------------------------------------------ DevBench.cpp
+	// ------------------------------------------------------------------ ClashDevBench.cpp
 	void OfferToDevBench();
 	// ClashDevBench.cpp: the arcaneclash.clash / arcaneclash.struggle events (nothing happens without DevBench)
 	void ClashEvent(std::string_view a_elementA, std::string_view a_elementB, bool a_destroyedA, bool a_destroyedB, bool a_yours);

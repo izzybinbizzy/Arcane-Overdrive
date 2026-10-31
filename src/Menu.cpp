@@ -169,12 +169,14 @@ namespace Plugin
 				// the fallback, should the menu keep the tapped key from reaching the game: a short list
 				static const int         kCodes[] = { 34, 47, 19, 33, 35, 44, 45, 46, 48, 58, 256 + 2, 256 + 3 };
 				static const char* const kNames[] = { "G", "V", "R", "F", "H", "Z", "X", "C", "B", "Caps Lock", "Mouse button 3", "Mouse button 4" };
-				int                      pick = -1;
-				for (int i = 0; i < 12; ++i) {
+				static_assert(std::size(kCodes) == std::size(kNames));
+				constexpr int kCount = static_cast<int>(std::size(kCodes));
+				int           pick = -1;
+				for (int i = 0; i < kCount; ++i) {
 					pick = kCodes[i] == s.overdriveKey ? i : pick;
 				}
 				ImGuiMCP::SetNextItemWidth(column * 0.5f);
-				if (ImGuiMCP::Combo("or pick one", &pick, kNames, 12) && pick >= 0) {
+				if (ImGuiMCP::Combo("or pick one", &pick, kNames, kCount) && pick >= 0) {
 					s.overdriveKey = kCodes[pick];
 					save = true;
 				}
@@ -215,8 +217,8 @@ namespace Plugin
 			{
 				static const char* const kBoost[] = { "Damage only", "All harmful spell effects" };
 				Choice("What is boosted", s.boost, kBoost, 2,
-					"Damage only: spells that hurt. All harmful spell effects: every harmful effect's strength (fear, paralysis, "
-					"slows and so on).",
+					"Damage only: spells that hurt. All harmful spell effects: every harmful effect's strength (drains, slows, "
+					"paralysis and so on); the highest level a fear, calm or frenzy spell works on stays the spell's own.",
 					save);
 			}
 			ImGuiMCP::EndDisabled();

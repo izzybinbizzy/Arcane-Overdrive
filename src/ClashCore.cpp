@@ -5,6 +5,7 @@
 // The game-free core (see Core.h). No game header here: tests/ builds this file on its own.
 
 #include "ClashCore.h"
+#include "IniText.h"
 
 #include <algorithm>
 #include <charconv>
@@ -285,25 +286,8 @@ namespace Crossfire::Core
 			return true;
 		}
 
-		[[nodiscard]] char Lower(char c) noexcept { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
-
-		[[nodiscard]] bool SameText(std::string_view a, std::string_view b) noexcept
-		{
-			return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return Lower(x) == Lower(y); });
-		}
-
-		[[nodiscard]] bool Space(char c) noexcept { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f'; }
-
-		[[nodiscard]] std::string_view Trim(std::string_view s) noexcept
-		{
-			while (!s.empty() && Space(s.front())) {
-				s.remove_prefix(1);
-			}
-			while (!s.empty() && Space(s.back())) {
-				s.remove_suffix(1);
-			}
-			return s;
-		}
+		using IniText::SameText;
+		using IniText::Trim;
 
 		[[nodiscard]] float Sanitize(float a_value, float a_fallback) noexcept { return std::isfinite(a_value) ? a_value : a_fallback; }
 	}
@@ -424,39 +408,33 @@ namespace Crossfire::Core
 		return false;
 	}
 
+	namespace
+	{
+		// each action's name first (ActionName), then the other words the rules file accepts for it
+		constexpr std::pair<std::string_view, Action> kActionNames[]{
+			{ "Pass", Action::kPass },
+			{ "Clash", Action::kClash },
+			{ "Annihilate", Action::kAnnihilate },
+			{ "Wins", Action::kWins },
+			{ "Loses", Action::kLoses },
+			{ "Ignore", Action::kPass },
+			{ "None", Action::kPass },
+			{ "Cancel", Action::kAnnihilate },
+			{ "Beats", Action::kWins },
+			{ "LosesTo", Action::kLoses },
+		};
+	}
+
 	std::string_view ActionName(Action a_action) noexcept
 	{
-		switch (a_action) {
-		case Action::kPass:
-			return "Pass";
-		case Action::kClash:
-			return "Clash";
-		case Action::kAnnihilate:
-			return "Annihilate";
-		case Action::kWins:
-			return "Wins";
-		case Action::kLoses:
-			return "Loses";
-		}
-		return "?";
+		const auto it = std::ranges::find(kActionNames, a_action, &std::pair<std::string_view, Action>::second);
+		return it != std::end(kActionNames) ? it->first : "?";
 	}
 
 	bool ParseAction(std::string_view a_text, Action& a_out) noexcept
 	{
 		a_text = Trim(a_text);
-		static constexpr std::pair<std::string_view, Action> kNames[]{
-			{ "Pass", Action::kPass },
-			{ "Ignore", Action::kPass },
-			{ "None", Action::kPass },
-			{ "Clash", Action::kClash },
-			{ "Annihilate", Action::kAnnihilate },
-			{ "Cancel", Action::kAnnihilate },
-			{ "Wins", Action::kWins },
-			{ "Beats", Action::kWins },
-			{ "Loses", Action::kLoses },
-			{ "LosesTo", Action::kLoses },
-		};
-		for (const auto& [name, action] : kNames) {
+		for (const auto& [name, action] : kActionNames) {
 			if (SameText(a_text, name)) {
 				a_out = action;
 				return true;
@@ -1856,6 +1834,16 @@ namespace Crossfire::Core
 		keywords[static_cast<std::size_t>(Element::kFire)] = { "MagicDamageFire" };
 		keywords[static_cast<std::size_t>(Element::kFrost)] = { "MagicDamageFrost" };
 		keywords[static_cast<std::size_t>(Element::kShock)] = { "MagicDamageShock" };
+	}
+
+	std::vector<std::pair<std::string_view, float>> SettingValues(const Config& a_config)
+	{
+		std::vector<std::pair<std::string_view, float>> out;
+		out.reserve(kSettings.size());
+		for (const auto& s : kSettings) {
+			out.emplace_back(s.key, s.get(a_config));
+		}
+		return out;
 	}
 
 	Range RangeOf(std::string_view a_key) noexcept

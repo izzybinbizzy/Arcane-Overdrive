@@ -15,24 +15,24 @@
 
 namespace Plugin
 {
-	namespace
+	const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item)
 	{
-		const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item)
-		{
-			if (!a_item) {
-				return nullptr;
-			}
-			if (const auto* e = a_item->GetCostliestEffectItem(); e && e->baseEffect) {
-				return e->baseEffect;
-			}
-			for (const auto* e : a_item->effects) {
-				if (e && e->baseEffect) {
-					return e->baseEffect;
-				}
-			}
+		if (!a_item) {
 			return nullptr;
 		}
+		if (const auto* e = a_item->GetCostliestEffectItem(); e && e->baseEffect) {
+			return e->baseEffect;
+		}
+		for (const auto* e : a_item->effects) {
+			if (e && e->baseEffect) {
+				return e->baseEffect;
+			}
+		}
+		return nullptr;
+	}
 
+	namespace
+	{
 		Heat::School SchoolOf(const RE::EffectSetting* a_effect)
 		{
 			switch (a_effect ? a_effect->GetMagickSkill() : RE::ActorValue::kNone) {

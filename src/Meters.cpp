@@ -258,10 +258,7 @@ namespace Plugin
 		const float dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
 		auto*       player = RE::PlayerCharacter::GetSingleton();
 		if (!s.enabled || !player) {
-			ResetAll();
-			ReleaseHands();
-			ReleaseOverload();
-			ReleaseMarks();
+			ReleaseAll();
 			UpdateTrueHud({}, s);  // switched off: TrueHUD's special bar is given back
 			PublishCharges(0.0f, {});
 			std::lock_guard lock(gViewLock);
@@ -402,9 +399,7 @@ namespace Plugin
 			return 1.0f;
 		}
 		const auto info = Read(a_item);
-		using K = Heat::SpellFacts::Kind;
-		const bool spell = info.facts.kind == K::kSpell || ((info.facts.kind == K::kStaff || info.facts.kind == K::kScroll) && s.counts.stavesAndScrolls);
-		if (!spell) {
+		if (!Heat::KindCounts(info.facts.kind, s.counts)) {
 			return 1.0f;
 		}
 		std::lock_guard lock(gLock);
@@ -414,6 +409,14 @@ namespace Plugin
 			++gBoosted;
 		}
 		return k;
+	}
+
+	void ReleaseAll()
+	{
+		ResetAll();
+		ReleaseHands();
+		ReleaseOverload();
+		ReleaseMarks();
 	}
 
 	void ResetAll()

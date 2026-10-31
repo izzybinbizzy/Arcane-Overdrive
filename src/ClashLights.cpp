@@ -5,9 +5,7 @@
 // The light a clash's design casts: one real light in the spell's color, hung on the design's mesh where the two met, flaring
 // and then fading with it, so the ground and the design's smoke, stones and blood are lit as they are thrown (scene-lit
 // parts show nothing at night without a light).
-// CREDIT: how the light is made and registered follows ReLight by Truman (github.com/TrumanGIT/ReLight), GPL-3.0-or-later,
-// with his permission: one master light made once and cloned for every light, registered as a dynamic, shadowless light.
-// With Community Shaders' inverse-square lighting the light's two words are written as a light of its own is (LightWords.h).
+// The light is made, registered and (with Community Shaders) written the one way (LightWords.h, after ReLight by Truman).
 // Main thread only.
 
 #include "ClashShared.h"
@@ -38,38 +36,7 @@ namespace Crossfire
 		std::vector<Lit>         gLit;
 		std::atomic<std::size_t> gLitCount{ 0 };  // gLit's size, for DevBench's thread
 
-		[[nodiscard]] RE::ShadowSceneNode* Scene() { return RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0]; }
-
-		// ReLight's master-and-clone: a light made fresh and attached at once crashes, a clone of one made earlier does not
-		[[nodiscard]] RE::NiPointLight* CloneLight()
-		{
-			static RE::NiPointer<RE::NiPointLight> master;
-			if (!master) {
-				const RE::NiPointer<RE::NiPointLight> fresh(RE::NiPointLight::Create());
-				auto*                                 clone = fresh ? netimmerse_cast<RE::NiPointLight*>(fresh->Clone()) : nullptr;
-				if (!clone) {
-					return nullptr;
-				}
-				master.reset(clone);
-			}
-			return netimmerse_cast<RE::NiPointLight*>(master->Clone());
-		}
-
-		[[nodiscard]] RE::BSLight* AddToScene(RE::ShadowSceneNode* a_scene, RE::NiPointLight* a_light)
-		{
-			RE::ShadowSceneNode::LIGHT_CREATE_PARAMS params{};
-			params.dynamic = true;
-			params.shadowLight = false;
-			params.portalStrict = true;
-			params.affectLand = true;
-			params.affectWater = true;
-			params.neverFades = true;
-			params.fov = 90.0f;
-			params.falloff = 1.0f;
-			params.nearDistance = 5.0f;
-			params.depthBias = 1.0f;
-			return a_scene && a_light ? a_scene->AddLight(a_light, params) : nullptr;
-		}
+		using LightWords::Scene;
 
 		// its brightness over its life, 0..1: up in 0.04 s, held to 0.12 s, then easing out to nothing at kLife
 		[[nodiscard]] float Curve(float a_age) noexcept
@@ -134,7 +101,7 @@ namespace Crossfire
 			if (gLit.size() >= kMostLights) {
 				return;
 			}
-			auto* light = CloneLight();
+			auto* light = LightWords::Clone();
 			if (!light) {
 				return;
 			}
@@ -155,7 +122,7 @@ namespace Crossfire
 			a_root->AttachChild(light, true);
 			RE::NiUpdateData update{};
 			light->Update(update);
-			auto* bs = AddToScene(scene, light);
+			auto* bs = LightWords::Register(light);
 			if (!bs) {
 				a_root->DetachChild(light);
 				return;
