@@ -2829,7 +2829,10 @@ void TestFirstTouchReference()
 	for (int i = 0; i < 12000; ++i) {
 		Table tb = DefaultTable();
 		for (int k = 0; k < 4; ++k) {
-			SetReaction(tb, static_cast<Element>(el(g)), static_cast<Element>(el(g)), static_cast<Action>(act(g)));
+			// one draw a statement: the order of a call's arguments is the compiler's, so one call would differ between compilers
+			const auto e1 = static_cast<Element>(el(g)), e2 = static_cast<Element>(el(g));
+			const auto a1 = static_cast<Action>(act(g));
+			SetReaction(tb, e1, e2, a1);
 		}
 		const auto  ea = static_cast<Element>(el(g)), eb = static_cast<Element>(el(g));
 		const float sa = u(g) < 0.05 ? 0.0f : static_cast<float>(std::pow(10.0, 4.0 * u(g) - 1.0));

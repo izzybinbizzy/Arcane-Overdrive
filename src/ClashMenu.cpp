@@ -26,6 +26,9 @@
 #include "MenuStyle.h"
 #include "Translation.h"
 
+#include <mutex>
+#include <set>
+
 namespace Crossfire
 {
 	namespace
@@ -444,6 +447,41 @@ namespace Crossfire
 				left ? core : clear, left ? core : clear, left ? clear : core);
 		}
 
+		// the pausing menus open now, kept on the game's thread at every menu open / close: the struggle bar is drawn on the
+		// render thread and never reads the game's UI itself
+		class PauseWatch final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+		{
+		public:
+			static PauseWatch& Get()
+			{
+				static PauseWatch watch;
+				return watch;
+			}
+			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+			{
+				if (a_event) {
+					Safe::Guarded("the pause watcher", [&] {
+						auto*             ui = RE::UI::GetSingleton();
+						const auto        menu = ui && a_event->opening ? ui->GetMenu(a_event->menuName.c_str()) : nullptr;
+						const std::string name(a_event->menuName.c_str());
+						std::lock_guard   lock(gate);
+						if (a_event->opening && menu && menu->PausesGame()) {
+							open.insert(name);
+						} else if (!a_event->opening) {
+							open.erase(name);
+						}
+						paused = !open.empty();
+					});
+				}
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			std::atomic<bool> paused{ false };
+
+		private:
+			std::mutex            gate;
+			std::set<std::string> open;
+		};
+
 		void DrawBar()
 		{
 			using namespace ImGuiMCP;
@@ -496,12 +534,11 @@ namespace Crossfire
 				v = held;
 			}
 			auto* io = GetIO();
-			auto* ui = RE::UI::GetSingleton();
 			if (!io) {
 				return;
 			}
 			// out of the way in a pausing menu, unless the menu asked for the preview
-			const bool  show = live && v.bar && (preview || !ui || !ui->GameIsPaused());
+			const bool  show = live && v.bar && (preview || !PauseWatch::Get().paused.load(std::memory_order_relaxed));
 			const float dt = std::isfinite(io->DeltaTime) ? std::clamp(io->DeltaTime, 0.0f, 0.25f) : 0.0f;
 			alpha = std::clamp(alpha + (show ? dt : -dt) * 4.0f, 0.0f, 1.0f);
 			auto* dl = alpha > 0.0f ? GetForegroundDrawList() : nullptr;
@@ -622,5 +659,8 @@ namespace Crossfire
 		SKSEMenuFramework::AddSectionItem(T("Clashes"), Render);
 		SKSEMenuFramework::AddSectionItem(T("Spell struggles"), RenderStruggles);
 		SKSEMenuFramework::AddHudElement(RenderBar);
+		if (auto* ui = RE::UI::GetSingleton()) {
+			ui->AddEventSink<RE::MenuOpenCloseEvent>(&PauseWatch::Get());
+		}
 	}
 }
