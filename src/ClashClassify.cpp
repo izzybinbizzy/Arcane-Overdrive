@@ -88,6 +88,25 @@ namespace Crossfire
 			return Core::Rgb{ c.red, c.green, c.blue };
 		}
 
+		// a record's editor ID: powerofthree's Tweaks keeps them when loaded (the game keeps few for spells, effects and
+		// projectiles), else the form's own; empty when neither has one
+		[[nodiscard]] std::string_view EditorIdOf(const RE::TESForm* a_form)
+		{
+			using GetFormEditorID = const char* (*)(std::uint32_t);
+			static const auto tweaks = [] {
+				const auto module = REX::W32::GetModuleHandleW(L"po3_Tweaks");
+				return module ? reinterpret_cast<GetFormEditorID>(REX::W32::GetProcAddress(module, "GetFormEditorID")) : nullptr;
+			}();
+			if (!a_form) {
+				return {};
+			}
+			const char* id = tweaks ? tweaks(a_form->GetFormID()) : nullptr;
+			if (!id || !*id) {
+				id = a_form->GetFormEditorID();
+			}
+			return id ? std::string_view(id) : std::string_view();
+		}
+
 		// the clash design: from the effect's tags, then words in the effect's, spell's and projectile's names and editor
 		// IDs (where the game keeps them) and the projectile's model file, then its element, then its light's hue
 		[[nodiscard]] Core::Look LookFor(const RE::EffectSetting* a_effect, const RE::MagicItem* a_spell, const RE::BGSProjectile* a_base,
@@ -111,14 +130,14 @@ namespace Crossfire
 			const auto text = [](const char* a_text) { return a_text ? std::string_view(a_text) : std::string_view(); };
 			if (a_effect) {
 				add(text(a_effect->GetFullName()));
-				add(text(a_effect->GetFormEditorID()));
+				add(EditorIdOf(a_effect));
 			}
 			if (a_spell) {
 				add(text(a_spell->GetFullName()));
-				add(text(a_spell->GetFormEditorID()));
+				add(EditorIdOf(a_spell));
 			}
 			if (a_base) {
-				add(text(a_base->GetFormEditorID()));
+				add(EditorIdOf(a_base));
 				add(Core::FileOf(text(a_base->GetModel())));  // the file only: nearly every spell's folder is "Magic"
 			}
 			const Core::LookFacts facts{ a_info.element, std::span<const std::string_view>(tags.data(), count), words, false, a_info.absorb,

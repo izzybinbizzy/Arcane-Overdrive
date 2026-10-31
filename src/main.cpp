@@ -40,12 +40,14 @@
 //                   ClashMenu.cpp its two pages; ClashDevBench.cpp
 //   Plugin.h        what they share      PCH.h  what they all include
 //   MenuStyle.h     the menu look every plugin of ours shares (Dynamic Wards' copy is the master)
+//   RuntimeGuard.h, Translation.h  shared word for word too (Soul Gem Hub's copies are the masters)
 //   DevBenchAPI.*, SKSEMenuFramework.h, TrueDirectionalMovementAPI.h, TrueHUDAPI.h, ReticleArcsAPI.h  other authors'
 //                   headers, copied unchanged (their licenses beside them; TDM's and TrueHUD's are GPL-3.0, as this plugin)
 
 #include "Plugin.h"
 #include "ClashShared.h"
 #include "Guarded.h"
+#include "RuntimeGuard.h"
 #include "Translation.h"
 
 namespace
@@ -335,6 +337,10 @@ namespace Plugin
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse);
+	// the wrong game: loaded but idle - a false here makes SKSE add its own "exit game?" box over the guard's
+	if (!RuntimeGuard::RightGame("Arcane Overdrive", "Arcane Overdrive", "")) {
+		return true;
+	}
 	SKSE::log::info("Arcane Overdrive {} loading", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string());
 	SKSE::GetMessagingInterface()->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
 		if (!a_msg) {
