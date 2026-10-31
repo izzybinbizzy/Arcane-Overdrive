@@ -13,6 +13,7 @@
 // with no element is Force"; an arrow is Physical unless its enchantment has an element (Core::Classify).
 
 #include "ClashShared.h"
+#include "Plugin.h"
 
 namespace Crossfire
 {
@@ -59,22 +60,30 @@ namespace Crossfire
 			}
 		}
 
-		[[nodiscard]] Core::Element ElementOf(const RE::EffectSetting* a_effect, bool a_voice, bool a_cone)
+		// the effect's keywords' editor IDs (the game keeps every keyword's), at most 32
+		struct Tags
 		{
 			std::array<std::string_view, 32> names{};
-			std::size_t                      count = 0;
-			std::string_view                 resist;
-			if (a_effect) {
-				for (std::uint32_t i = 0; a_effect->keywords && i < a_effect->numKeywords && count < names.size(); ++i) {
+			std::size_t                      count{ 0 };
+
+			explicit Tags(const RE::EffectSetting* a_effect)
+			{
+				for (std::uint32_t i = 0; a_effect && a_effect->keywords && i < a_effect->numKeywords && count < names.size(); ++i) {
 					if (const auto* kw = a_effect->keywords[i]) {
 						if (const char* id = kw->GetFormEditorID(); id && *id) {
 							names[count++] = id;
 						}
 					}
 				}
-				resist = ResistName(a_effect->data.resistVariable);
 			}
-			const Core::MagicFacts facts{ std::span<const std::string_view>(names.data(), count), resist, a_voice, a_cone };
+			[[nodiscard]] std::span<const std::string_view> Span() const { return { names.data(), count }; }
+		};
+
+		[[nodiscard]] Core::Element ElementOf(const RE::EffectSetting* a_effect, bool a_voice, bool a_cone)
+		{
+			const Tags             tags(a_effect);
+			const std::string_view resist = a_effect ? ResistName(a_effect->data.resistVariable) : std::string_view();
+			const Core::MagicFacts facts{ tags.Span(), resist, a_voice, a_cone };
 			return Core::Classify(facts, Live().keywords);
 		}
 
@@ -88,20 +97,31 @@ namespace Crossfire
 			return Core::Rgb{ c.red, c.green, c.blue };
 		}
 
+		// a record's editor ID: powerofthree's Tweaks keeps them when loaded (the game keeps few for spells, effects and
+		// projectiles), else the form's own; empty when neither has one
+		[[nodiscard]] std::string_view EditorIdOf(const RE::TESForm* a_form)
+		{
+			using GetFormEditorID = const char* (*)(std::uint32_t);
+			static const auto tweaks = [] {
+				const auto module = REX::W32::GetModuleHandleW(L"po3_Tweaks");
+				return module ? reinterpret_cast<GetFormEditorID>(REX::W32::GetProcAddress(module, "GetFormEditorID")) : nullptr;
+			}();
+			if (!a_form) {
+				return {};
+			}
+			const char* id = tweaks ? tweaks(a_form->GetFormID()) : nullptr;
+			if (!id || !*id) {
+				id = a_form->GetFormEditorID();
+			}
+			return id ? std::string_view(id) : std::string_view();
+		}
+
 		// the clash design: from the effect's tags, then words in the effect's, spell's and projectile's names and editor
-		// IDs (where the game keeps them) and the projectile's model file, then its element, then its light's hue
+		// IDs (EditorIdOf) and the projectile's model file, then its element, then its light's hue
 		[[nodiscard]] Core::Look LookFor(const RE::EffectSetting* a_effect, const RE::MagicItem* a_spell, const RE::BGSProjectile* a_base,
 			const Info& a_info)
 		{
-			std::array<std::string_view, 32> tags{};
-			std::size_t                      count = 0;
-			for (std::uint32_t i = 0; a_effect && a_effect->keywords && i < a_effect->numKeywords && count < tags.size(); ++i) {
-				if (const auto* kw = a_effect->keywords[i]) {
-					if (const char* id = kw->GetFormEditorID(); id && *id) {
-						tags[count++] = id;
-					}
-				}
-			}
+			const Tags  tags(a_effect);
 			std::string words;
 			const auto  add = [&](std::string_view a_text) {
 				if (!a_text.empty()) {
@@ -111,36 +131,22 @@ namespace Crossfire
 			const auto text = [](const char* a_text) { return a_text ? std::string_view(a_text) : std::string_view(); };
 			if (a_effect) {
 				add(text(a_effect->GetFullName()));
-				add(text(a_effect->GetFormEditorID()));
+				add(EditorIdOf(a_effect));
 			}
 			if (a_spell) {
 				add(text(a_spell->GetFullName()));
-				add(text(a_spell->GetFormEditorID()));
+				add(EditorIdOf(a_spell));
 			}
 			if (a_base) {
-				add(text(a_base->GetFormEditorID()));
+				add(EditorIdOf(a_base));
 				add(Core::FileOf(text(a_base->GetModel())));  // the file only: nearly every spell's folder is "Magic"
 			}
-			const Core::LookFacts facts{ a_info.element, std::span<const std::string_view>(tags.data(), count), words, false, a_info.absorb,
+			const Core::LookFacts facts{ a_info.element, tags.Span(), words, false, a_info.absorb,
 				a_info.resist == RE::ActorValue::kResistMagic, a_info.light };
 			return Core::LookOf(facts);
 		}
 
-		[[nodiscard]] const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item)
-		{
-			if (!a_item) {
-				return nullptr;
-			}
-			if (const auto* e = a_item->GetCostliestEffectItem(); e && e->baseEffect) {
-				return e->baseEffect;
-			}
-			for (const auto* e : a_item->effects) {
-				if (e && e->baseEffect) {
-					return e->baseEffect;
-				}
-			}
-			return nullptr;
-		}
+		using Plugin::MainEffect;
 
 		[[nodiscard]] bool Hostile(const RE::MagicItem* a_item, const RE::EffectSetting* a_effect)
 		{
@@ -247,7 +253,6 @@ namespace Crossfire
 				break;
 			}
 			info.stream = Core::StreamOf(info.kind, concentration, voice);  // the switches are read live, not cached here
-			(void)a_base;
 			return info;
 		}
 	}
@@ -284,26 +289,34 @@ namespace Crossfire
 		return nullptr;
 	}
 
-	// an explosion that only shows: no damage of its own, no enchantment, nothing it spawns or places. The ones spells
-	// use are like this (a spell's own effect is what hurts, and Crossfire does not deliver it); a mod's may not be.
+	// an explosion that only shows: no damage of its own, no enchantment, no push, nothing it spawns or places (Incinerate's
+	// burst, Fire's stand-in under some magic overhauls, pushes with force 7 and may knock people down)
 	bool SafeExplosion(const RE::BGSExplosion* a_explosion)
 	{
-		return a_explosion && !a_explosion->formEnchanting && !(a_explosion->data.damage > 0.0f) && !a_explosion->data.spawnProjectile &&
-		       !a_explosion->data.impactPlacedObject;
+		using Flag = RE::BGSExplosionData::Flag;
+		return a_explosion && !a_explosion->formEnchanting && !(a_explosion->data.damage > 0.0f) && !(a_explosion->data.force > 0.0f) &&
+		       !a_explosion->data.flags.any(Flag::kKnockDown_Always) && !a_explosion->data.spawnProjectile && !a_explosion->data.impactPlacedObject;
 	}
 
 	namespace
 	{
 		RE::SpellItem*                                 gFear = nullptr;
 		std::array<RE::BGSExplosion*, Core::kElements> gStandIn{};
-		std::array<std::string, Core::kLooks>          gClashArt{};  // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
-		std::unordered_map<std::string, std::string>   gPairArt;     // a pair's name -> its mesh, when there is one
+		std::array<std::string, Core::kLooks>          gClashArt{};         // meshes\ArcaneOverdrive\Clash<Look>.nif, when there is one
+		std::unordered_map<std::string, std::string>   gPairArt;            // a pair's name -> its mesh, when there is one
+		std::atomic<bool>                              gArtReady{ false };  // FindClashArt has run (DevBench may ask before)
+
+		// a stand-in plays again and again while two streams grind: one that also flashes the screen shows by its model only
+		[[nodiscard]] bool QuietStandIn(const RE::BGSExplosion* a_explosion)
+		{
+			return SafeExplosion(a_explosion) && !a_explosion->imageSpaceModifying;
+		}
 	}
 
 	// For each element, the burst a clash shows for a spell that has none of its own (Firebolt, Ice Spike, Lightning
 	// Bolt): the explosion of the costliest aimed spell of that element. Skyrim.esm's own spells first, so the look is the
 	// game's; any plugin's when the game has none. Most spell explosions carry the spell's harm (82 of 102 in his order),
-	// so one that does is shown by its MODEL only (StandInModel) - a visual, never the explosion itself.
+	// so one that does, pushes or flashes the screen is shown by its MODEL only (StandInModel) - never the explosion itself.
 	// ⛔ PAID FOR 2026-10-02: a runtime copy of the explosion with the harm taken out (IFormFactory::Create) crashed the
 	// game a few seconds after every load (0xc0000409 in ucrtbase, no crash log) - no forms are made at run time.
 	void FindStandInBursts()
@@ -341,7 +354,7 @@ namespace Crossfire
 			const auto* src = gStandIn[e];
 			SKSE::log::info("stand-in burst for {}: {}", Core::ElementName(static_cast<Core::Element>(e)),
 				src ? std::format("{:08X} ({}){}", src->GetFormID(), src->GetModel() ? src->GetModel() : "",
-						  SafeExplosion(src) ? "" : ", its model only (the explosion carries harm)") :
+						  QuietStandIn(src) ? "" : ", its model only (the explosion hurts, pushes or flashes the screen)") :
 					  std::string("none"));
 		}
 	}
@@ -374,7 +387,18 @@ namespace Crossfire
 				gPairArt.emplace(std::string(pair), std::move(art));
 			}
 		}
+		// the same spell meeting itself may have a design of its own look (lightning's Resonance has no rings)
+		for (std::size_t l = 0; l < Core::kLooks; ++l) {
+			const auto key = std::format("Resonance{}", Core::LookName(static_cast<Core::Look>(l)));
+			if (auto art = ArtIfThere("ClashPair" + key); !art.empty()) {
+				SKSE::log::info("pair art for {}: meshes\\{}", key, art);
+				gPairArt.emplace(key, std::move(art));
+			}
+		}
+		gArtReady = true;
 	}
+
+	bool ClashArtReady() { return gArtReady.load(); }
 
 	const char* ClashArt(Core::Look a_look)
 	{
@@ -391,17 +415,18 @@ namespace Crossfire
 	RE::BGSExplosion* StandInBurst(Core::Element a_element)
 	{
 		const auto e = static_cast<std::size_t>(a_element);
-		return e < gStandIn.size() && SafeExplosion(gStandIn[e]) ? gStandIn[e] : nullptr;
+		return e < gStandIn.size() && QuietStandIn(gStandIn[e]) ? gStandIn[e] : nullptr;
 	}
 
 	const char* StandInModel(Core::Element a_element)
 	{
 		const auto e = static_cast<std::size_t>(a_element);
-		if (e >= gStandIn.size() || !gStandIn[e] || SafeExplosion(gStandIn[e])) {
+		if (e >= gStandIn.size() || !gStandIn[e] || QuietStandIn(gStandIn[e])) {
 			return nullptr;
 		}
+		// the game's empty explosion art (FXEmptyExplosion...) draws nothing: not worth a spawn every spark
 		const char* m = gStandIn[e]->GetModel();
-		return m && *m ? m : nullptr;
+		return m && *m && std::string_view(m).find("FXEmpty") == std::string_view::npos ? m : nullptr;
 	}
 
 	// the cheapest of Skyrim.esm's own aimed Illusion fear spells (Fear itself), for "Winning scares weaker enemies"

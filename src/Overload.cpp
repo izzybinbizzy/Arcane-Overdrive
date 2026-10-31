@@ -20,11 +20,17 @@
 //     or blinks out (Sparks in the red). Each is played once where the hand is, as the game plays an impact - no form is
 //     made - and moved with the hand while it lasts. The look is the hand's spell's element; a model that is not installed
 //     is never asked for.
+//   - LINGERING, each capped and scaled by the Heat: after heavy
+//     casting (Hot or hotter as a hand's cast ends) the hand keeps spitting embers / frost / sparks a while (Hand embers) and a
+//     light of the spell's color hangs on it and fades out (Hand afterglow); whoever the player's spell hits (Warm or hotter)
+//     gets a light that fades out on them (Hit afterglow) and smoulders a moment (Smoulder). The embers and smoulder are the
+//     Sparks models above; the lights are ClashLights.cpp's.
 // Every value is written from a remembered base, as the hand lights are (Hands.cpp): a value someone else has written since
 // is taken as the new base, and a node or controller no longer ours is put back as it was found.
 
-#include "Plugin.h"
+#include "ClashShared.h"
 #include "Overload.h"
+#include "Plugin.h"
 
 namespace Plugin
 {
@@ -39,7 +45,10 @@ namespace Plugin
 		constexpr float         kSparkGap = 0.3f;   // a hand spits sparks at most this often, seconds
 		constexpr float         kFlareLife = 1.0f;  // how long the game keeps each effect: past its last particle
 		constexpr float         kSparkLife = 0.8f;
-		constexpr std::uint32_t kSpawnFlags = 7;  // as the clash bursts are played (ClashPass.cpp ModelHere)
+		constexpr std::uint32_t kSpawnFlags = 7;     // as the clash bursts are played (ClashPass.cpp ModelHere)
+		constexpr float         kEmberGap = 0.35f;   // a lingering hand or target spits again this often, seconds
+		constexpr std::size_t   kMostLingering = 8;  // hands and targets lingering at once
+		constexpr float         kHitAgain = 0.6f;    // the same target lingers again at most this often (a stream hits many times a second)
 
 		// our effect models: [effect][look], look = SpellInfo::element (0 every other element, 1 fire, 2 frost, 3 shock)
 		enum Effect : std::size_t
@@ -131,6 +140,7 @@ namespace Plugin
 			RE::NiPointer<RE::BSTempEffect> effect;
 			std::size_t                     hand{ 0 };
 			float                           until{ 0.0f };
+			RE::NiPointer<RE::NiAVObject>   follow;  // a hit target's node it rides with instead of a hand
 		};
 		std::vector<Riding> gRiding;  // main thread
 
@@ -151,7 +161,7 @@ namespace Plugin
 
 		// one of our effects played once where a hand is, at a_scale, as the game plays an impact, then kept on the hand
 		bool PlayAt(RE::PlayerCharacter* a_player, std::size_t a_hand, const RE::NiAVObject* a_at, Effect a_effect, std::size_t a_look, float a_scale,
-			float a_life)
+			float a_life, RE::NiAVObject* a_follow = nullptr)
 		{
 			const auto& model = gModels[a_effect][a_look];
 			auto*       cell = a_player->GetParentCell();
@@ -160,8 +170,8 @@ namespace Plugin
 				return false;
 			}
 			auto* shown = RE::BSTempEffectParticle::Spawn(cell, a_life, model.c_str(), RE::NiPoint3{}, at, a_scale, kSpawnFlags, nullptr);
-			if (shown && gRiding.size() < 16) {
-				gRiding.push_back({ RE::NiPointer<RE::BSTempEffect>(shown), a_hand, gTime + a_life });
+			if (shown && gRiding.size() < 32) {
+				gRiding.push_back({ RE::NiPointer<RE::BSTempEffect>(shown), a_hand, gTime + a_life, RE::NiPointer<RE::NiAVObject>(a_follow) });
 			}
 			return shown != nullptr;
 		}
@@ -174,7 +184,7 @@ namespace Plugin
 				if (!shown || !a_player || gTime > r.until) {
 					return true;
 				}
-				const auto* hand = HandNode(a_player, r.hand);
+				const auto* hand = r.follow ? r.follow.get() : HandNode(a_player, r.hand);
 				auto*       object = shown->particleObject.get();
 				if (hand && object && Finite(hand->world.translate) && Finite(object->world.translate)) {
 					object->local.translate += hand->world.translate - object->world.translate;
@@ -183,9 +193,157 @@ namespace Plugin
 			});
 		}
 
+		// ------------------------------------------------------------------ lingering
+		struct Lingering
+		{
+			RE::NiPointer<RE::NiAVObject> on;  // a hit target's node; empty for a hand (looked up afresh each time)
+			std::size_t                   hand{ 2 };
+			std::size_t                   look{ 0 };
+			float                         scale{ 1.0f };
+			float                         next{ 0.0f }, until{ 0.0f };
+			const RE::NiAVObject*         top{ nullptr };  // a target's: the top of its tree when hit (Crossfire::TopOf), only compared
+		};
+		struct NotedHit
+		{
+			RE::ActorHandle target;
+			RE::FormID      source{ 0 };
+		};
+		struct RecentHit
+		{
+			RE::ActorHandle target;
+			float           at{ 0.0f };
+		};
+		std::vector<Lingering>     gLingering;  // main thread
+		std::vector<RecentHit>     gRecentHits;
+		const RE::MagicItem*       gCasting[2]{ nullptr, nullptr };  // each hand's spell being cast last frame
+		std::mutex                 gHitLock;
+		std::vector<NotedHit>      gNotedHits;  // from the hit event, any thread
+		std::atomic<std::uint32_t> gEmbers{ 0 }, gAfterglows{ 0 }, gHitGlows{ 0 }, gSmoulders{ 0 };
+
+		// 0 at a_from, 1 at a full Heat bar
+		[[nodiscard]] float HeatShare(float a_heat, float a_from) noexcept
+		{
+			return a_from < Heat::kFull ? std::clamp((a_heat - a_from) / (Heat::kFull - a_from), 0.0f, 1.0f) : 0.0f;
+		}
+
+		[[nodiscard]] std::size_t LookOfSpell(const RE::MagicItem* a_spell)
+		{
+			const int e = a_spell ? Read(a_spell).element : 0;
+			return e >= 1 && e <= 3 ? static_cast<std::size_t>(e) : 0;
+		}
+
+		// the spell's own light color, else its element's
+		[[nodiscard]] Crossfire::Core::Rgb ColorOf(const RE::MagicItem* a_spell, std::size_t a_look)
+		{
+			const auto* e = a_spell ? a_spell->GetCostliestEffectItem() : nullptr;
+			if (const auto* light = e && e->baseEffect ? e->baseEffect->data.light : nullptr) {
+				if (const auto& c = light->data.color; c.red || c.green || c.blue) {
+					return { c.red, c.green, c.blue };
+				}
+			}
+			constexpr std::array<Crossfire::Core::Rgb, 4> kByLook{ { { 150, 170, 255 }, { 255, 140, 60 }, { 140, 200, 255 }, { 170, 140, 255 } } };
+			return kByLook[a_look < kByLook.size() ? a_look : 0];
+		}
+
+		// a hand's cast just ended: from Hot up its embers keep falling and its light fades out
+		void CastEnded(RE::PlayerCharacter* a_player, std::size_t a_hand, const RE::MagicItem* a_spell, float a_heat, const Settings& a_s)
+		{
+			const float k = HeatShare(a_heat, a_s.tuning.at[1]);
+			if (k <= 0.0f) {
+				return;
+			}
+			const auto look = LookOfSpell(a_spell);
+			if (a_s.handEmbers) {
+				std::erase_if(gLingering, [a_hand](const Lingering& l) { return l.hand == a_hand; });
+				if (gLingering.size() < kMostLingering) {
+					gLingering.push_back({ {}, a_hand, look, 0.6f + 0.4f * k, gTime, gTime + 1.5f + 2.5f * k });
+				}
+			}
+			// on the third-person hand in both views: the caster's own node is the first-person one in first person
+			if (a_s.handAfterglow) {
+				if (auto* node = HandLightNode(a_player, a_hand)) {
+					Crossfire::LightAfterglow(node, ColorOf(a_spell, look), 180.0f + 120.0f * k, 0.8f + 0.8f * k, 0.8f + 1.4f * k);
+					++gAfterglows;
+				}
+			}
+		}
+
+		// the hits noted since the last frame: from Warm up, a light that fades out on the target and a smoulder on them
+		void TakeHits(float a_heat, const Settings& a_s)
+		{
+			std::vector<NotedHit> hits;
+			{
+				std::scoped_lock lock(gHitLock);
+				hits.swap(gNotedHits);
+			}
+			std::erase_if(gRecentHits, [](const RecentHit& r) { return gTime - r.at > kHitAgain; });
+			const float k = HeatShare(a_heat, a_s.tuning.at[0]);
+			if (k <= 0.0f || !(a_s.hitAfterglow || a_s.smoulder)) {
+				return;
+			}
+			static const RE::BSFixedString chest{ "NPC Spine2 [Spn2]" };
+			for (const auto& h : hits) {
+				if (std::ranges::any_of(gRecentHits, [&h](const RecentHit& r) { return r.target == h.target; })) {
+					continue;
+				}
+				const auto  target = h.target.get();
+				const auto* spell = RE::TESForm::LookupByID<RE::MagicItem>(h.source);
+				auto*       root = target ? target->Get3D() : nullptr;
+				if (!spell || !root || target->IsDead()) {
+					continue;
+				}
+				auto* at = root->GetObjectByName(chest);
+				at = at ? at : root;
+				gRecentHits.push_back({ h.target, gTime });
+				const auto look = LookOfSpell(spell);
+				if (auto* node = a_s.hitAfterglow ? at->AsNode() : nullptr) {
+					Crossfire::LightAfterglow(node, ColorOf(spell, look), 160.0f + 120.0f * k, 0.7f + 0.8f * k, 1.0f + 1.5f * k);
+					++gHitGlows;
+				}
+				if (a_s.smoulder && gLingering.size() < kMostLingering) {
+					gLingering.push_back({ RE::NiPointer<RE::NiAVObject>(at), 2, look, 0.5f + 0.3f * k, gTime, gTime + 1.5f + 2.0f * k, Crossfire::TopOf(at) });
+				}
+			}
+		}
+
+		// once a frame: each lingering hand or target spits its embers again, until its time is up
+		void Linger(RE::PlayerCharacter* a_player)
+		{
+			std::erase_if(gLingering, [a_player](Lingering& l) {
+				// a target's node keeps its parent when the actor unloads: the top of its tree tells
+				if (gTime > l.until || (l.on && (!l.on->parent || Crossfire::TopOf(l.on.get()) != l.top))) {
+					return true;
+				}
+				if (gTime < l.next) {
+					return false;
+				}
+				l.next = gTime + kEmberGap;
+				const bool            hand = !l.on;
+				const RE::NiAVObject* at = hand ? HandNode(a_player, l.hand) : l.on.get();
+				if (at && PlayAt(a_player, hand ? l.hand : 0, at, kSparks, l.look, l.scale, kSparkLife, hand ? nullptr : l.on.get())) {
+					++(hand ? gEmbers : gSmoulders);
+				}
+				return false;
+			});
+		}
+
 		void Grow(RE::NiAVObject* a_node, float a_scale, bool a_shows)
 		{
 			if (!a_node) {
+				return;
+			}
+			// back at its own size and showing: put back and forgotten, so nothing keeps scanning for it every frame
+			if (a_scale == 1.0f && a_shows) {
+				if (const auto known = gNodes.find(a_node); known != gNodes.end()) {
+					auto& g = known->second;
+					if (a_node->local.scale == g.written) {
+						a_node->local.scale = g.base;
+					}
+					if (g.culled) {
+						a_node->SetAppCulled(false);
+					}
+					gNodes.erase(known);
+				}
 				return;
 			}
 			auto [it, added] = gNodes.try_emplace(a_node);
@@ -262,70 +420,35 @@ namespace Plugin
 
 		void PutBack()
 		{
-			for (auto it = gNodes.begin(); it != gNodes.end();) {
-				auto& g = it->second;
-				if (gFrame - g.frame > kKeepFrames) {
-					if (g.node) {
-						if (g.node->local.scale == g.written) {
-							g.node->local.scale = g.base;
-						}
-						if (g.culled) {
-							g.node->SetAppCulled(false);
-						}
-					}
-					it = gNodes.erase(it);
-				} else {
-					++it;
+			std::erase_if(gNodes, [](auto& a_kv) {
+				auto& g = a_kv.second;
+				if (gFrame - g.frame <= kKeepFrames) {
+					return false;
 				}
-			}
-			for (auto it = gControllers.begin(); it != gControllers.end();) {
-				auto& s = it->second;
-				if (gFrame - s.frame > kKeepFrames) {
-					if (s.ctrl && s.ctrl->frequency == s.written) {
-						Retime(s.ctrl.get(), s.base);
-					}
-					it = gControllers.erase(it);
-				} else {
-					++it;
+				if (g.node && g.node->local.scale == g.written) {
+					g.node->local.scale = g.base;
 				}
-			}
+				if (g.node && g.culled) {
+					g.node->SetAppCulled(false);
+				}
+				return true;
+			});
+			std::erase_if(gControllers, [](auto& a_kv) {
+				auto& s = a_kv.second;
+				if (gFrame - s.frame <= kKeepFrames) {
+					return false;
+				}
+				if (s.ctrl && s.ctrl->frequency == s.written) {
+					Retime(s.ctrl.get(), s.base);
+				}
+				return true;
+			});
 		}
 
-		// the player's spell projectiles in the world, from the game's own projectile lists (main thread only: the two lists
-		// are kept from frame to frame so a frame allocates nothing)
-		std::vector<RE::NiPointer<RE::Projectile>> gSpellProjectiles;  // this frame's only: emptied at the end of every update
-
-		const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellProjectiles(RE::PlayerCharacter* a_player)
-		{
-			auto&                                    out = gSpellProjectiles;
-			static std::vector<RE::ProjectileHandle> handles;
-			out.clear();
-			handles.clear();
-			auto* mgr = RE::Projectile::Manager::GetSingleton();
-			if (!mgr) {
-				return out;
-			}
-			{
-				RE::BSSpinLockGuard guard(mgr->projectileLock);
-				for (const auto* list : { &mgr->unlimited, &mgr->limited, &mgr->pending }) {
-					for (const auto& h : *list) {
-						handles.push_back(h);
-					}
-				}
-			}
-			for (auto& h : handles) {
-				auto proj = h.get();
-				if (!proj || out.size() >= 64) {
-					continue;
-				}
-				auto&      rd = proj->GetProjectileRuntimeData();
-				const auto shooter = rd.shooter.get();
-				if (shooter.get() == a_player && rd.spell) {
-					out.push_back(std::move(proj));
-				}
-			}
-			return out;
-		}
+		// the player's spell projectiles this frame (PlayerSpellsNow); the lists are kept from frame to frame so a frame allocates nothing
+		std::vector<RE::NiPointer<RE::Projectile>> gSpellProjectiles;  // let go at the end of every frame (ReleaseSpellsNow)
+		std::uint32_t                              gSpellsFrame{ 0 };  // the frame they were gathered in; 0: none
+		constexpr std::size_t                      kMostSpells = 128;  // the player's own; more is a modded storm, not a look
 
 		[[nodiscard]] std::uint32_t SeedOf(const void* a_ptr) noexcept { return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(a_ptr) >> 4); }
 
@@ -387,8 +510,9 @@ namespace Plugin
 			}
 			std::size_t sped = 0;
 			lists->ForEachModelEffect([&](RE::ModelReferenceEffect* a_effect) {
-				auto* ctl = a_effect ? skyrim_cast<RE::ActiveEffectReferenceEffectController*>(a_effect->controller) : nullptr;
-				if (ctl && ctl->effect && ctl->effect->caster.get().get() == a_player && a_effect->artObject3D) {
+				// the cheap test first: most effects have no art up
+				auto* ctl = a_effect && a_effect->artObject3D ? skyrim_cast<RE::ActiveEffectReferenceEffectController*>(a_effect->controller) : nullptr;
+				if (ctl && ctl->effect && ctl->effect->caster.get().get() == a_player) {
 					SpeedAll(a_effect->artObject3D.get(), a_ferocity);
 					++sped;
 				}
@@ -396,6 +520,50 @@ namespace Plugin
 			});
 			return sped;
 		}
+	}
+
+	const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellsNow(RE::PlayerCharacter* a_player)
+	{
+		auto& out = gSpellProjectiles;
+		if (gSpellsFrame == gFrame) {
+			return out;
+		}
+		gSpellsFrame = gFrame;
+		static std::vector<RE::ProjectileHandle> handles;
+		out.clear();
+		handles.clear();
+		auto* mgr = RE::Projectile::Manager::GetSingleton();
+		if (!mgr || !a_player) {
+			return out;
+		}
+		{
+			RE::BSSpinLockGuard guard(mgr->projectileLock);
+			for (const auto* list : { &mgr->unlimited, &mgr->limited, &mgr->pending }) {
+				for (const auto& h : *list) {
+					handles.push_back(h);
+				}
+			}
+		}
+		for (auto& h : handles) {
+			if (out.size() >= kMostSpells) {
+				break;
+			}
+			auto proj = h.get();
+			if (!proj) {
+				continue;
+			}
+			auto& rd = proj->GetProjectileRuntimeData();
+			if (rd.spell && rd.shooter.get().get() == a_player) {
+				out.push_back(std::move(proj));
+			}
+		}
+		return out;
+	}
+
+	void ReleaseSpellsNow()
+	{
+		gSpellProjectiles.clear();  // keeps its room, lets the projectiles go
+		gSpellsFrame = 0;
 	}
 
 	void NoteSpawned(RE::TESObjectREFR* a_ref)
@@ -407,6 +575,18 @@ namespace Plugin
 		std::scoped_lock lock(gNoteLock);
 		if (gNoted.size() < 256) {
 			gNoted.push_back(handle);
+		}
+	}
+
+	void NoteHit(RE::Actor* a_target, RE::FormID a_source)
+	{
+		if (!a_target || !a_source) {
+			return;
+		}
+		const auto       handle = a_target->GetHandle();
+		std::scoped_lock lock(gHitLock);
+		if (gNotedHits.size() < 64) {
+			gNotedHits.push_back({ handle, a_source });
 		}
 	}
 
@@ -430,7 +610,7 @@ namespace Plugin
 		if (fired) {
 			gFocusFrom = gTime;
 		}
-		if (!gModelsRead && (a_s.focusFlare || a_s.redSparks)) {
+		if (!gModelsRead && (a_s.focusFlare || a_s.redSparks || a_s.handEmbers || a_s.smoulder)) {
 			FindModels();
 		}
 		gPhase = phase;
@@ -469,7 +649,7 @@ namespace Plugin
 					++gFlares;
 				}
 				// a spit of sparks when the red zone swells the hand's spell or blinks it out, once per step of it
-				const auto step = static_cast<std::uint32_t>(static_cast<std::int64_t>(std::floor(gTime * 12.0f)) & 0xFFFFFFFF);
+				const auto step = Overload::Step(gTime, 12.0);
 				if (art && a_s.redSparks && gWild > 0.0f && step != gSparkTick[hand]) {
 					gSparkTick[hand] = step;
 					if ((wild.size > 1.0f || !wild.shows) && gTime - gSparkAt[hand] >= kSparkGap &&
@@ -478,9 +658,19 @@ namespace Plugin
 						++gSparks;
 					}
 				}
+				const RE::MagicItem* casting = caster ? caster->currentSpell : nullptr;
+				if (gCasting[hand] && !casting) {
+					CastEnded(player, hand, gCasting[hand], a_v.heat, a_s);
+				}
+				gCasting[hand] = casting;
 			}
+			TakeHits(a_v.heat, a_s);
+			Linger(player);
 			if (active || !gNodes.empty()) {
-				for (const auto& proj : PlayerSpellProjectiles(player)) {
+				for (const auto& proj : PlayerSpellsNow(player)) {
+					if (projectiles >= 64) {
+						break;
+					}
 					auto* root = proj->Get3D();
 					if (!root) {
 						continue;
@@ -500,6 +690,10 @@ namespace Plugin
 		} else {
 			gLight[0] = 1.0f;
 			gLight[1] = 1.0f;
+			gLingering.clear();
+			gCasting[0] = gCasting[1] = nullptr;
+			std::scoped_lock lock(gHitLock);
+			gNotedHits.clear();  // hits noted while off are not acted on when it comes back on
 		}
 		Ride(player);
 		const bool impactsOn = player && growing && a_s.impactsGrow;
@@ -507,7 +701,6 @@ namespace Plugin
 			gSpawned.clear();  // switched off: what was grown goes back (PutBack, below)
 		}
 		impacts = GrowSpawned(player, impactsOn ? Overload::ImpactSize(gPower * pull, a_s.impactGrowth) : 1.0f);
-		gSpellProjectiles.clear();  // keeps its room, lets the projectiles go
 		PutBack();
 		gPowerNow = gPower;
 		gWildNow = gWild;
@@ -521,13 +714,20 @@ namespace Plugin
 
 	void ReleaseOverload()
 	{
-		gSpellProjectiles.clear();
+		ReleaseSpellsNow();
 		{
 			std::scoped_lock lock(gNoteLock);
 			gNoted.clear();
 		}
 		gSpawned.clear();
 		gRiding.clear();
+		gLingering.clear();
+		gRecentHits.clear();
+		gCasting[0] = gCasting[1] = nullptr;
+		{
+			std::scoped_lock lock(gHitLock);
+			gNotedHits.clear();
+		}
 		gFrame += kKeepFrames + 2;
 		PutBack();
 		gPower = 1.0f;
@@ -548,6 +748,9 @@ namespace Plugin
 		gFlares = 0;
 		gSparks = 0;
 		gSparkAt[0] = gSparkAt[1] = -10.0f;
+		// the clock starts again with every load: a float clock run for days loses its fraction
+		gTime = 0.0f;
+		gFocusFrom = -1.0f;
 	}
 
 	float HandLightFactor(std::size_t a_hand) { return a_hand < 2 ? gLight[a_hand].load() : 1.0f; }
@@ -555,6 +758,7 @@ namespace Plugin
 	OverloadView OverloadNow()
 	{
 		return { gPowerNow.load(), gArts.load(), gProjectiles.load(), gOut.load(), gWildNow.load(), gPullNow.load(), gImpacts.load(), gHits.load(),
-			gExplosions.load(), gHazards.load(), gFlares.load(), gSparks.load(), gModelsFound.load() };
+			gExplosions.load(), gHazards.load(), gFlares.load(), gSparks.load(), gModelsFound.load(), gEmbers.load(), gAfterglows.load(), gHitGlows.load(),
+			gSmoulders.load() };
 	}
 }

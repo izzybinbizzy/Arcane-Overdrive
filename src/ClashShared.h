@@ -10,20 +10,30 @@
 
 namespace Crossfire
 {
-	// ------------------------------------------------------------------ Settings.cpp: the files
+	// a game point as the core's Vec3, and back
+	[[nodiscard]] inline Core::Vec3   V(const RE::NiPoint3& a_p) noexcept { return { a_p.x, a_p.y, a_p.z }; }
+	[[nodiscard]] inline RE::NiPoint3 N(Core::Vec3 a_v) noexcept { return { a_v.x, a_v.y, a_v.z }; }
+
+	// ------------------------------------------------------------------ ClashSettings.cpp: the files
 	//
 	// Read in this order, each on top of the last: SpellMasteryHeat Clash Rules.ini (shipped: elements, reactions,
 	// exclusions), every SpellMasteryHeat Clash\*.ini (patches, alphabetical), SpellMasteryHeat Clashes.ini (the menu's). Live() is the game's main thread's own copy;
 	// the menu works on a copy of its own (MenuCopy/Submit), handed over as a task on the main thread.
-	void                                   LoadSettings();                                     // main thread: at data load, and "Reload" in the menu
-	[[nodiscard]] const Core::Config&      Live();                                             // main thread only
-	[[nodiscard]] Core::Config             MenuCopy();                                         // any thread
-	void                                   Submit(const Core::Config& a_config, bool a_save);  // any thread; the rules are kept
-	void                                   ReloadSoon();                                       // any thread
-	[[nodiscard]] std::vector<std::string> LoadNotes();                                        // any thread: what the last load said (warnings, files read)
-	[[nodiscard]] bool                     Excluded(const RE::TESForm* a_form);                // main thread
+	void                              LoadSettings();                                     // main thread: at data load, and "Reload" in the menu
+	[[nodiscard]] const Core::Config& Live();                                             // main thread only
+	[[nodiscard]] Core::Config        MenuCopy();                                         // any thread
+	[[nodiscard]] Core::Config        MenuCopy(std::uint64_t& a_gen);                     // any thread; a_gen: which change it is
+	void                              Submit(const Core::Config& a_config, bool a_save);  // any thread; the rules are kept
+	// Submit, unless the menu's copy changed since a_gen (DevBench, a preset): then false, and a_save writes what is there now
+	bool SubmitIf(const Core::Config& a_config, bool a_save, std::uint64_t a_gen);
+	// the three clash effects the Visuals presets cover (SettingsText kVisuals): designs, the clash light, particle lights
+	[[nodiscard]] std::array<bool, 3>      VisualsNow();                                              // any thread
+	void                                   SetVisuals(const std::array<bool, 3>& a_on, bool a_save);  // any thread
+	void                                   ReloadSoon();                                              // any thread
+	[[nodiscard]] std::vector<std::string> LoadNotes();                                               // any thread: what the last load said (warnings, files read)
+	[[nodiscard]] bool                     Excluded(const RE::TESForm* a_form);                       // main thread
 
-	// ------------------------------------------------------------------ Classify.cpp: what a projectile is to Crossfire
+	// ------------------------------------------------------------------ ClashClassify.cpp: what a projectile is to Crossfire
 	struct Info
 	{
 		bool                     eligible{ false };  // false: Crossfire never touches it
@@ -55,9 +65,10 @@ namespace Crossfire
 	void                            FindClashArt();                         // once, at data load: meshes\ArcaneOverdrive\Clash<Look>.nif and ClashPair<Pair>.nif that exist
 	[[nodiscard]] const char*       ClashArt(Core::Look a_look);            // that mesh (under meshes\), or nullptr
 	[[nodiscard]] const char*       PairArt(std::string_view a_pair);       // a pair's mesh, or nullptr
+	[[nodiscard]] bool              ClashArtReady();                        // the art has been looked up (data load)
 	[[nodiscard]] RE::SpellItem*    FearSpell();                            // null when none was found
 
-	// ------------------------------------------------------------------ Clash.cpp: the pass, once a frame
+	// ------------------------------------------------------------------ ClashPass.cpp: the pass, once a frame
 	void Update(float a_delta);  // main thread, from the player's update
 	void Reset();                // a save is loading, or a new game: every handle we hold is meaningless now
 
@@ -78,7 +89,7 @@ namespace Crossfire
 	bool LockAtLaunch(RE::Projectile* a_p, const Info& a_info, RE::Actor* a_shooter, const Core::Config& a_cfg);  // a bolt the pass first sees
 	void LockBeam(RE::Projectile* a_p);                                                                           // a one-shot bolt, as it picks its target
 
-	// one stream projectile of this frame's pass, for Struggle.cpp; `entry` stays valid until the end of the pass
+	// one stream projectile of this frame's pass, for ClashStruggle.cpp; `entry` stays valid until the end of the pass
 	struct StreamRef
 	{
 		std::size_t                    entry{ 0 };
@@ -94,10 +105,30 @@ namespace Crossfire
 		float                          radius{ 0.0f }, power{ 1.0f }, length{ 0.0f };  // length: a beam's, as drawn
 		RE::MagicSystem::CastingSource source{ RE::MagicSystem::CastingSource::kOther };
 	};
-	void Snuff(std::size_t a_entry);                                                                         // kill it quietly: no burst, no event, no experience
-	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config);  // its own explosion
+	void Snuff(std::size_t a_entry);  // kill it quietly: no burst, no event, no experience
+	// its own explosion, and (a_design) its clash design with `a_also`'s when that looks different
+	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config, const Info* a_also = nullptr,
+		bool a_design = true);
+	// ------------------------------------------------------------------ ClashLights.cpp: the light a design casts (main thread)
+	void LightDesign(RE::NiAVObject* a_root, Core::Rgb a_color, float a_scale, float a_percent);  // hung on the design's mesh
+	// a light that starts at a_fade and fades out over a_seconds on a node that stays (a hand, a hit target) - Overload.cpp's lingering
+	void LightAfterglow(RE::NiNode* a_node, Core::Rgb a_color, float a_reach, float a_fade, float a_seconds);
+	// the top of the tree a node hangs in: it changes when its actor or cell leaves the world (a parent alone stays)
+	[[nodiscard]] inline const RE::NiAVObject* TopOf(const RE::NiAVObject* a_node) noexcept
+	{
+		while (a_node && a_node->parent) {
+			a_node = a_node->parent;
+		}
+		return a_node;
+	}
+	void                      UpdateLights(float a_delta);  // each light flared and faded along its design, let go when done or gone
+	void                      ClearLights();                // a load, or the clashes reset: every light let go
+	[[nodiscard]] std::size_t LightsLit();
+	// DevBench's look at a design: a look's (or a pair's) design played a_ahead in front of the player and a_up above her
+	// feet, turned to her heading and tinted as a clash would; queued for the main thread. False: no such look
+	bool ShowDesign(std::string_view a_look, std::string_view a_pair, std::optional<Core::Rgb> a_color, float a_ahead, float a_up);
 
-	// ------------------------------------------------------------------ Struggle.cpp: streams that lock (main thread)
+	// ------------------------------------------------------------------ ClashStruggle.cpp: streams that lock (main thread)
 	namespace Struggles
 	{
 		[[nodiscard]] bool Reeling(std::uint32_t a_shooter);  // it lost a struggle a moment ago: its streams fizzle
@@ -121,6 +152,9 @@ namespace Crossfire
 		float        balance{ 0.0f };  // + : you are pushing it toward them
 		float        lead{ 0.0f }, seconds{ 0.0f };
 		std::uint8_t mine{ 0 }, theirs{ 0 };  // elements
+		Core::Rgb    myColor, theirColor;     // each stream's own light color (its design's when it has none)
+		float        shoveAge{ -1.0f };       // the lock's age at your last Overdrive Breakpoint shove, -1 none
+		bool         shoveOnBeat{ false };
 		int          mySkill{ 0 }, theirSkill{ 0 };
 		bool         myBreath{ false }, theirBreath{ false };
 		char         school[16]{}, theirSchool[16]{};
@@ -131,10 +165,12 @@ namespace Crossfire
 	};
 	[[nodiscard]] StruggleView StruggleNow();
 
-	// ------------------------------------------------------------------ Menu.cpp
+	// ------------------------------------------------------------------ ClashMenu.cpp: the two pages and the struggle bar
 	void RegisterMenu();
+	void RequestBarPreview();     // any thread: the struggle bar's sample shows for a few seconds (the menu's button, DevBench)
+	void NotePassRan() noexcept;  // main thread, every frame: the struggle bar hides when the pass stops (the game paused)
 
-	// ------------------------------------------------------------------ DevBench.cpp
+	// ------------------------------------------------------------------ ClashDevBench.cpp
 	void OfferToDevBench();
 	// ClashDevBench.cpp: the arcaneclash.clash / arcaneclash.struggle events (nothing happens without DevBench)
 	void ClashEvent(std::string_view a_elementA, std::string_view a_elementB, bool a_destroyedA, bool a_destroyedB, bool a_yours);

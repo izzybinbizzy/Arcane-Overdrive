@@ -10,14 +10,15 @@
 #pragma once
 
 #include <algorithm>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace Translation
 {
@@ -34,7 +35,7 @@ namespace Translation
 		// space and ' flags count too ("% d" takes an argument there); otherwise "100% is" stays plain text.
 		inline std::vector<std::string> Placeholders(std::string_view a_s, bool a_format = false)
 		{
-			const std::string_view   flags = a_format ? std::string_view("-+#0123456789.lhzjtL* '") : std::string_view("-+#0123456789.lhzjtL*");
+			const std::string_view   flags = a_format ? std::string_view("-+#0123456789.lhzjtLIw* '") : std::string_view("-+#0123456789.lhzjtLIw*");
 			std::vector<std::string> out;
 			for (std::size_t i = 0; i < a_s.size(); ++i) {
 				if (a_s[i] == '%') {
@@ -42,16 +43,18 @@ namespace Translation
 						++i;
 						continue;
 					}
-					// a conversion is flags/width/length then one conversion letter
+					// a conversion is flags/width/length then one conversion letter - MSVC's own %S, %C, %Z and its I, I32,
+					// I64 and w sizes included ("%I64u" is one conversion, not "%I" and text)
 					std::size_t j = i + 1;
 					while (j < a_s.size() && flags.find(a_s[j]) != std::string_view::npos) {
 						++j;
 					}
-					if (j < a_s.size() && std::string_view("diouxXeEfFgGaAcspn").find(a_s[j]) != std::string_view::npos) {
+					const bool known = j < a_s.size() && std::string_view("diouxXeEfFgGaAcspnSCZ").find(a_s[j]) != std::string_view::npos;
+					// printf reads ANY '%' as a conversion: one it does not know (a translated "50 % r") or a '%' at the very
+					// end counts too, so it never matches the English and never reaches printf
+					if (known || a_format) {
 						out.emplace_back(a_s.substr(i, j - i + 1));
 						i = j;
-					} else if (a_format) {
-						out.emplace_back("%?");  // not a conversion printf knows: the line must not be used
 					}
 				} else if (a_s[i] == '{') {
 					const auto j = a_s.find('}', i);
@@ -66,182 +69,62 @@ namespace Translation
 			return out;
 		}
 
-		inline void Utf8(std::string& a_out, std::uint32_t a_cp)
+		// where the file's top object closes - braces inside quoted text don't count - or npos
+		inline std::size_t RootClose(std::string_view a_text)
 		{
-			if (a_cp < 0x80) {
-				a_out += static_cast<char>(a_cp);
-			} else if (a_cp < 0x800) {
-				a_out += static_cast<char>(0xC0 | (a_cp >> 6));
-				a_out += static_cast<char>(0x80 | (a_cp & 0x3F));
-			} else if (a_cp < 0x10000) {
-				a_out += static_cast<char>(0xE0 | (a_cp >> 12));
-				a_out += static_cast<char>(0x80 | ((a_cp >> 6) & 0x3F));
-				a_out += static_cast<char>(0x80 | (a_cp & 0x3F));
-			} else {
-				a_out += static_cast<char>(0xF0 | (a_cp >> 18));
-				a_out += static_cast<char>(0x80 | ((a_cp >> 12) & 0x3F));
-				a_out += static_cast<char>(0x80 | ((a_cp >> 6) & 0x3F));
-				a_out += static_cast<char>(0x80 | (a_cp & 0x3F));
+			int  depth = 0;
+			bool quoted = false;
+			for (std::size_t i = 0; i < a_text.size(); ++i) {
+				const char c = a_text[i];
+				if (quoted) {
+					if (c == '\\') {
+						++i;
+					} else if (c == '"') {
+						quoted = false;
+					}
+				} else if (c == '"') {
+					quoted = true;
+				} else if (c == '{' || c == '[') {
+					++depth;
+				} else if ((c == '}' || c == ']') && --depth <= 0) {
+					return depth == 0 && c == '}' ? i : std::string_view::npos;
+				}
 			}
+			return std::string_view::npos;
 		}
 
-		// a minimal reader for exactly this file: one JSON object of string values. False on anything else.
-		class Reader
+		// the file's lines, or false with what is wrong. As the reader before it: what follows the top object is not read, and
+		// a comma after the last line is forgiven (translators leave one; the parser itself refuses both); anything but one
+		// object of text lines is refused whole.
+		inline bool Read(std::string a_text, std::unordered_map<std::string, std::string>& a_out, std::string& a_error)
 		{
-		public:
-			explicit Reader(std::string_view a_text) :
-				s(a_text) {}
-
-			bool Object(std::unordered_map<std::string, std::string>& a_out, std::string& a_error)
-			{
-				Space();
-				if (!Eat('{')) {
-					return Fail(a_error, "the file must start with {");
-				}
-				Space();
-				if (Eat('}')) {
-					return true;
-				}
-				while (true) {
-					std::string key, value;
-					Space();
-					if (!String(key)) {
-						return Fail(a_error, "expected a quoted English line");
-					}
-					Space();
-					if (!Eat(':')) {
-						return Fail(a_error, "expected : after \"" + key + "\"");
-					}
-					Space();
-					if (!String(value)) {
-						return Fail(a_error, "expected a quoted translation for \"" + key + "\"");
-					}
-					a_out[key] = value;
-					Space();
-					if (Eat(',')) {
-						Space();
-						if (Eat('}')) {
-							return true;  // a trailing comma is forgiven
-						}
-						continue;
-					}
-					if (Eat('}')) {
-						return true;
-					}
-					return Fail(a_error, "expected , or } after \"" + key + "\"");
+			if (const auto close = RootClose(a_text); close != std::string::npos && close > 0) {
+				a_text.resize(close + 1);
+				const auto comma = a_text.find_last_not_of(" \t\r\n", close - 1);
+				const auto before = comma != std::string::npos && comma > 0 ? a_text.find_last_not_of(" \t\r\n", comma - 1) : std::string::npos;
+				if (before != std::string::npos && a_text[comma] == ',' && a_text[before] != '{') {
+					a_text.erase(comma, 1);
 				}
 			}
-
-		private:
-			bool Fail(std::string& a_error, std::string a_what)
-			{
-				std::size_t line = 1;
-				for (std::size_t k = 0; k < i && k < s.size(); ++k) {
-					line += s[k] == '\n' ? 1 : 0;
-				}
-				a_error = "line " + std::to_string(line) + ": " + a_what;
-				return false;
-			}
-			void Space()
-			{
-				while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) {
-					++i;
-				}
-			}
-			bool Eat(char a_c)
-			{
-				if (i < s.size() && s[i] == a_c) {
-					++i;
-					return true;
-				}
-				return false;
-			}
-			bool Hex4(std::uint32_t& a_v)
-			{
-				if (i + 4 > s.size()) {
+			try {
+				const auto json = nlohmann::json::parse(a_text);
+				if (!json.is_object()) {
+					a_error = "the file must be one { } of \"English\": \"translation\" lines";
 					return false;
 				}
-				a_v = 0;
-				for (int k = 0; k < 4; ++k) {
-					const char c = s[i++];
-					a_v <<= 4;
-					if (c >= '0' && c <= '9') {
-						a_v |= static_cast<std::uint32_t>(c - '0');
-					} else if (c >= 'a' && c <= 'f') {
-						a_v |= static_cast<std::uint32_t>(c - 'a' + 10);
-					} else if (c >= 'A' && c <= 'F') {
-						a_v |= static_cast<std::uint32_t>(c - 'A' + 10);
-					} else {
+				for (const auto& [key, value] : json.items()) {
+					if (!value.is_string()) {
+						a_error = "expected a quoted translation for \"" + key + "\"";
 						return false;
 					}
+					a_out[key] = value.get<std::string>();
 				}
 				return true;
-			}
-			bool String(std::string& a_out)
-			{
-				if (!Eat('"')) {
-					return false;
-				}
-				while (i < s.size()) {
-					const char c = s[i++];
-					if (c == '"') {
-						return true;
-					}
-					if (c != '\\') {
-						a_out += c;
-						continue;
-					}
-					if (i >= s.size()) {
-						return false;
-					}
-					switch (const char e = s[i++]) {
-					case '"':
-					case '\\':
-					case '/':
-						a_out += e;
-						break;
-					case 'n':
-						a_out += '\n';
-						break;
-					case 't':
-						a_out += '\t';
-						break;
-					case 'r':
-						a_out += '\r';
-						break;
-					case 'b':
-						a_out += '\b';
-						break;
-					case 'f':
-						a_out += '\f';
-						break;
-					case 'u':
-						{
-							std::uint32_t cp = 0;
-							if (!Hex4(cp)) {
-								return false;
-							}
-							if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
-								i += 2;
-								std::uint32_t lo = 0;
-								if (!Hex4(lo)) {
-									return false;
-								}
-								cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-							}
-							Utf8(a_out, cp);
-							break;
-						}
-					default:
-						return false;
-					}
-				}
+			} catch (const nlohmann::json::exception& e) {
+				a_error = e.what();
 				return false;
 			}
-
-			std::string_view s;
-			std::size_t      i{ 0 };
-		};
+		}
 	}
 
 	// Reads the file (call once, at data load, before the menu is registered). Returns what to log.
@@ -251,17 +134,17 @@ namespace Translation
 		map.clear();
 		std::ifstream in(a_file, std::ios::binary);
 		if (!in) {
-			return "no translation file (" + a_file.filename().string() + "): the pages are in English";
+			// the name as UTF-8: path::string() throws for a name the ANSI code page cannot show
+			const auto name = a_file.filename().generic_u8string();
+			return "no translation file (" + std::string(name.begin(), name.end()) + "): the pages are in English";
 		}
-		std::stringstream ss;
-		ss << in.rdbuf();
-		std::string text = ss.str();
+		std::string text{ std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>() };
 		if (text.starts_with("\xEF\xBB\xBF")) {
 			text.erase(0, 3);
 		}
 		std::unordered_map<std::string, std::string> read;
 		std::string                                  error;
-		if (!Detail::Reader(text).Object(read, error)) {
+		if (!Detail::Read(std::move(text), read, error)) {
 			return "translation file not used - " + error;
 		}
 		std::size_t used = 0, same = 0, bad = 0;
@@ -271,9 +154,10 @@ namespace Translation
 				++same;
 				continue;
 			}
-			// an English line with a conversion is printed through printf: read both sides by printf's own rules
+			// an English line with a conversion or a "%%" is printed through printf: read both sides by printf's own rules
 			const auto lenient = Detail::Placeholders(en);
-			const bool format = std::ranges::any_of(lenient, [](const std::string& p) { return p.starts_with('%'); });
+			const bool format = en.find("%%") != std::string::npos ||
+			                    std::ranges::any_of(lenient, [](const std::string& p) { return p.starts_with('%'); });
 			if (Detail::Placeholders(en, format) != Detail::Placeholders(tr, format)) {
 				++bad;
 				if (badLines.size() < 400) {

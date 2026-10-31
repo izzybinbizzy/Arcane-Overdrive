@@ -11,17 +11,39 @@
 // Threads: the menu changes the settings on the render thread and DevBench on its own, while the main thread reads them
 // every frame. The one copy here is behind a lock, and everyone else works on a copy (Config / SetConfig).
 
+#include "ClashShared.h"
 #include "Plugin.h"
 
 #include <sstream>
 
 namespace Plugin
 {
+	bool WriteWhole(const std::filesystem::path& a_path, std::string_view a_text, std::ios::openmode a_mode)
+	{
+		auto            tmp = a_path;
+		std::error_code ec;
+		tmp += ".tmp";
+		bool ok = false;
+		{
+			std::ofstream out(tmp, a_mode | std::ios::trunc);
+			ok = out && out.write(a_text.data(), static_cast<std::streamsize>(a_text.size())) && out.flush();
+		}
+		if (!ok) {
+			SKSE::log::warn("settings: {} could not be written", a_path.filename().string());
+		} else if (std::filesystem::rename(tmp, a_path, ec); ec) {
+			SKSE::log::warn("settings: {} could not be replaced ({})", a_path.filename().string(), ec.message());
+			ok = false;
+		}
+		std::filesystem::remove(tmp, ec);  // nothing left behind when the move failed
+		return ok;
+	}
+
 	namespace
 	{
 		std::mutex  gLock;
 		Settings    gSettings;
 		std::string gAdvancedWritten;  // the advanced file's text as last read or written
+		std::mutex  gSaveLock;         // one save at a time: the menu and the key capture may both save
 
 		std::string AdvancedText(const Settings& a_s)
 		{
@@ -31,41 +53,28 @@ namespace Plugin
 		}
 
 		// written beside the file, then moved over it: a crash or a full disk mid-write leaves the old settings, never half a file
-		bool WriteFile(const char* a_path, const std::string& a_text)
-		{
-			const std::string tmp = std::string(a_path) + ".tmp";
-			std::ofstream     out(tmp, std::ios::trunc);
-			if (!out) {
-				SKSE::log::warn("settings: {} could not be written", a_path);
-				return false;
-			}
-			out << a_text;
-			out.close();
-			std::error_code ec;
-			bool            ok = true;
-			if (!out) {
-				SKSE::log::warn("settings: {} could not be written", a_path);
-				ok = false;
-			} else if (std::filesystem::rename(tmp, a_path, ec); ec) {
-				SKSE::log::warn("settings: {} could not be replaced ({})", a_path, ec.message());
-				ok = false;
-			}
-			std::filesystem::remove(tmp, ec);  // nothing left behind when the move failed
-			return ok;
-		}
+		bool WriteFile(const char* a_path, const std::string& a_text) { return WriteWhole(a_path, a_text, std::ios::out); }
 
-		// one file into a_s: its problems logged; how many keys it gave, and whether every advanced key was in it
-		int ReadFile(const char* a_path, Settings& a_s, bool& a_allAdvanced)
+		// a file's whole text, or none
+		[[nodiscard]] std::optional<std::string> FileText(const char* a_path)
 		{
 			std::ifstream in(a_path);
 			if (!in) {
-				a_allAdvanced = false;
-				return -1;
+				return std::nullopt;
 			}
 			std::stringstream text;
 			text << in.rdbuf();
-			const std::string  all = text.str();
-			std::istringstream lines(all);
+			return text.str();
+		}
+
+		// a file's text into a_s, its problems logged: how many keys it gave (no file: -1), and whether every advanced key was in it
+		int ParseText(const char* a_path, const std::optional<std::string>& a_text, Settings& a_s, bool& a_allAdvanced)
+		{
+			if (!a_text) {
+				a_allAdvanced = false;
+				return -1;
+			}
+			std::istringstream lines(*a_text);
 			const auto         read = SettingsText::Read(lines, a_s);
 			for (const auto& p : read.problems) {
 				SKSE::log::warn("settings: {}: {}", a_path, p);
@@ -76,6 +85,8 @@ namespace Plugin
 			});
 			return read.taken;
 		}
+
+		int ReadFile(const char* a_path, Settings& a_s, bool& a_allAdvanced) { return ParseText(a_path, FileText(a_path), a_s, a_allAdvanced); }
 	}
 
 	Settings Config()
@@ -100,6 +111,17 @@ namespace Plugin
 	{
 		std::lock_guard lock(gLock);
 		SettingsText::ApplyPreset(gSettings, a_preset);
+	}
+
+	void ApplyVisualPreset(bool a_performance)
+	{
+		std::array<bool, 3> clash{};
+		{
+			std::lock_guard lock(gLock);
+			SettingsText::ApplyVisuals(gSettings, a_performance);
+			clash = SettingsText::ClashVisuals(gSettings, a_performance);
+		}
+		Crossfire::SetVisuals(clash, false);
 	}
 
 	void LoadSettings()
@@ -132,21 +154,23 @@ namespace Plugin
 
 	bool ReloadAdvanced()
 	{
-		Settings s = Config();
-		bool     all = false;
-		if (ReadFile(SettingsText::kAdvancedFile, s, all) < 0) {
+		// the disk read outside the lock (the main thread takes it every frame); parsed straight into the one copy under it, so
+		// a change made meanwhile on another thread is not lost
+		const auto      text = FileText(SettingsText::kAdvancedFile);
+		bool            all = false;
+		std::lock_guard lock(gLock);
+		if (ParseText(SettingsText::kAdvancedFile, text, gSettings, all) < 0) {
 			SKSE::log::warn("settings: {} could not be read", SettingsText::kAdvancedFile);
 			return false;
 		}
-		SetConfig(s);
-		std::lock_guard lock(gLock);
-		gAdvancedWritten = AdvancedText(s);
+		gAdvancedWritten = AdvancedText(gSettings);
 		SKSE::log::info("settings: {} read again", SettingsText::kAdvancedFile);
 		return true;
 	}
 
 	void SaveSettings()
 	{
+		std::scoped_lock   save(gSaveLock);
 		const auto         s = Config();
 		std::ostringstream menu;
 		SettingsText::WriteMenu(menu, s);

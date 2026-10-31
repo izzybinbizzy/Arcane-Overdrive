@@ -21,6 +21,7 @@
 // moment another mod lights that hand.
 // Everything here runs on the main thread, from the player's update.
 
+#include "LightWords.h"
 #include "Plugin.h"
 
 namespace Plugin
@@ -28,11 +29,8 @@ namespace Plugin
 	namespace
 	{
 		constexpr const char*   kNodes[2]{ "NPC L MagicNode [LMag]", "NPC R MagicNode [RMag]" };
-		constexpr const char*   kOwnName = "SpellMasteryHeatLight";
 		constexpr std::uint32_t kKeepFrames = 2;  // a light not seen for this many frames is put back
 		constexpr float         kOwnReach = 160.0f, kOwnFade = 0.9f;
-		constexpr std::uint32_t kInverseSquare = 1u << 10;
-		constexpr float         kK = 3918.88f, kSize = 1.414f;
 
 		struct Seen
 		{
@@ -51,29 +49,16 @@ namespace Plugin
 		std::uint32_t                               gFrame = 1;
 		std::unordered_map<RE::NiPointLight*, Seen> gLights;
 		Own                                         gOwn[2];
-		RE::NiPointer<RE::NiPointLight>             gMaster;
 		std::atomic<std::size_t>                    gScaled{ 0 }, gFrozen{ 0 }, gOwnCount{ 0 };
 		std::atomic<float>                          gFactor[2]{ 1.0f, 1.0f };
 
-		RE::ShadowSceneNode* Scene() { return RE::BSShaderManager::State::GetSingleton().shadowSceneNode[0]; }
+		using LightWords::Scene;
 
-		// Community Shaders' inverse square lights: its own shader, or (Bottled Shaders 1.0.10 and later, which dropped that
-		// file) Light Limit Fix's attenuation reading each light's InverseSquare flag - Illuminated's Lighting.cpp reads both
-		bool Isl()
+		// x and y are a light's reach, z its size
+		void SetReach(RE::NiLight::LIGHT_RUNTIME_DATA& a_data, float a_reach)
 		{
-			static const bool isl = [] {
-				std::error_code ec;
-				if (std::filesystem::exists("Data/Shaders/InverseSquareLighting/InverseSquareLighting.hlsli", ec)) {
-					return true;
-				}
-				std::ifstream in("Data/Shaders/LightLimitFix/Attenuation.hlsli", std::ios::binary);
-				if (!in) {
-					return false;
-				}
-				const std::string text{ std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>() };
-				return text.find("InverseSquare") != std::string::npos;
-			}();
-			return isl;
+			a_data.radius.x = a_reach;
+			a_data.radius.y = a_reach;
 		}
 
 		void Restore(Seen& a_seen)
@@ -84,9 +69,7 @@ namespace Plugin
 			auto& data = a_seen.light->GetLightRuntimeData();
 			data.fade = a_seen.fade.Restore(data.fade);
 			if (a_seen.radius.Written()) {
-				const float r = a_seen.radius.Restore(data.radius.x);
-				data.radius.x = r;
-				data.radius.y = r;
+				SetReach(data, a_seen.radius.Restore(data.radius.x));
 			}
 		}
 
@@ -103,25 +86,10 @@ namespace Plugin
 			}
 			auto& data = a_light->GetLightRuntimeData();
 			data.fade = seen.fade.Apply(data.fade, a_factor);
-			const float r = seen.radius.Apply(data.radius.x, a_factor);
-			data.radius.x = r;  // x and y are the reach, z is the size
-			data.radius.y = r;
+			SetReach(data, seen.radius.Apply(data.radius.x, a_factor));
 		}
 
 		// ---- our own light (Hand glow)
-		RE::NiPointLight* CloneMaster()
-		{
-			if (!gMaster) {
-				const RE::NiPointer<RE::NiPointLight> fresh(RE::NiPointLight::Create());
-				auto*                                 clone = fresh ? netimmerse_cast<RE::NiPointLight*>(fresh->Clone()) : nullptr;
-				if (!clone) {
-					return nullptr;
-				}
-				gMaster.reset(clone);
-			}
-			return netimmerse_cast<RE::NiPointLight*>(gMaster->Clone());
-		}
-
 		void DropOwn(Own& a_own)
 		{
 			if (a_own.registered) {
@@ -158,29 +126,18 @@ namespace Plugin
 			if (!a_own.light || a_own.node != a_node || a_own.light->parent != a_node) {
 				DropOwn(a_own);
 				auto*                           scene = Scene();
-				RE::NiPointer<RE::NiPointLight> light(CloneMaster());
+				RE::NiPointer<RE::NiPointLight> light(LightWords::Clone());
 				if (!scene || !light) {
 					return;
 				}
-				light->name = kOwnName;
+				light->name = LightWords::kHandGlow;
 				auto& data = light->GetLightRuntimeData();
-				data.radius = { kOwnReach, kOwnReach, kSize };
+				data.radius = { kOwnReach, kOwnReach, LightWords::kSize };
 				light->SetLightAttenuation(kOwnReach);
 				a_node->AttachChild(light.get(), true);
 				RE::NiUpdateData update{};
 				light->Update(update);
-				RE::ShadowSceneNode::LIGHT_CREATE_PARAMS params{};
-				params.dynamic = true;
-				params.shadowLight = false;
-				params.portalStrict = true;
-				params.affectLand = true;
-				params.affectWater = true;
-				params.neverFades = true;
-				params.fov = 90.0f;
-				params.falloff = 1.0f;
-				params.nearDistance = 5.0f;
-				params.depthBias = 1.0f;
-				auto* registered = scene->AddLight(light.get(), params);
+				auto* registered = LightWords::Register(light.get());
 				if (!registered) {
 					a_node->DetachChild(light.get());
 					return;
@@ -195,11 +152,9 @@ namespace Plugin
 			const float reach = kOwnReach * a_factor;
 			data.diffuse = ColorOf(a_element);
 			data.fade = fade;
-			data.radius.x = reach;
-			data.radius.y = reach;
-			if (Isl()) {
-				data.ambient.red = std::bit_cast<float>(std::bit_cast<std::uint32_t>(data.ambient.red) | kInverseSquare);
-				data.ambient.green = std::clamp(kK * fade / (reach * reach + kSize * kSize), 0.01f, 0.99f);
+			SetReach(data, reach);
+			if (LightWords::InverseSquare()) {
+				LightWords::Write(a_own.light.get(), fade, reach);
 			}
 		}
 
@@ -250,6 +205,11 @@ namespace Plugin
 		RE::NiNode* ThirdPersonMagicNode(RE::PlayerCharacter* a_player, std::size_t a_hand) { return MagicNodeOf(a_player, a_hand, 1); }
 	}
 
+	RE::NiNode* HandLightNode(RE::PlayerCharacter* a_player, std::size_t a_hand)
+	{
+		return a_player && a_hand < 2 ? ThirdPersonMagicNode(a_player, a_hand) : nullptr;
+	}
+
 	void UpdateHands(Heat::Stage a_left, Heat::Stage a_right, const Settings& a_s)
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
@@ -267,7 +227,8 @@ namespace Plugin
 			std::size_t others = 0;
 			for (auto* node : nodes) {
 				RE::BSVisit::TraverseScenegraphLights(node, [&](RE::NiPointLight* a_light) {
-					if (a_light && a_light->name != kOwnName) {
+					// ours (the glow, the cast's afterglow) neither count as another mod's light nor are scaled
+					if (a_light && a_light->name != LightWords::kHandGlow && a_light->name != LightWords::kClash) {
 						Scale(a_light, factor);
 						++others;
 					}

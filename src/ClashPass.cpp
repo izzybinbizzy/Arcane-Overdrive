@@ -11,6 +11,7 @@
 // Everything the game gives us is checked before it is used; anything odd is simply left out of the frame.
 
 #include "ClashShared.h"
+#include "Guarded.h"
 
 #include "CrossfireAPI.h"
 
@@ -21,8 +22,6 @@ namespace Crossfire
 		using Core::PairKey;
 		using Core::Vec3;
 
-		[[nodiscard]] Vec3         V(const RE::NiPoint3& a_p) noexcept { return { a_p.x, a_p.y, a_p.z }; }
-		[[nodiscard]] RE::NiPoint3 N(Vec3 a_v) noexcept { return { a_v.x, a_v.y, a_v.z }; }
 		// a unit vector along a_v; zero for none (not finite, or too short to have a direction)
 		[[nodiscard]] Vec3 Unit(Vec3 a_v) noexcept
 		{
@@ -88,7 +87,7 @@ namespace Crossfire
 		std::vector<Entry>                gEntries;
 		std::vector<Core::Body>           gBodies;
 		std::vector<Core::Contact>        gContacts;
-		std::vector<StreamRef>            gStreams;  // this frame's lockable streams, for Struggle.cpp
+		std::vector<StreamRef>            gStreams;  // this frame's lockable streams, for ClashStruggle.cpp
 		Core::Limiter                     gBursts, gXP, gEvents;
 		std::uint32_t                     gFrame = 0;
 		double                            gClock = 0.0;  // game seconds since the game started; never goes back
@@ -242,8 +241,11 @@ namespace Crossfire
 			}
 		}
 
-		// a model played where the two met, for two seconds (the clash art, or a stand-in burst's model)
-		RE::BSTempEffectParticle* ModelHere(const char* a_model, Vec3 a_at, float a_scale, RE::Projectile* a_projectile)
+		[[nodiscard]] float Scale(float a_scale) noexcept { return std::isfinite(a_scale) ? std::clamp(a_scale, 0.5f, 3.0f) : 1.0f; }
+
+		// a model played where the two met, for two seconds (the clash art, or a stand-in burst's model), turned to the
+		// heading given (a design's pieces that fly back to the casters follow its local Y)
+		RE::BSTempEffectParticle* ModelHere(const char* a_model, Vec3 a_at, float a_scale, RE::Projectile* a_projectile, float a_heading = 0.0f)
 		{
 			const char*        model = a_model;
 			auto*              player = RE::PlayerCharacter::GetSingleton();
@@ -255,23 +257,42 @@ namespace Crossfire
 			if (!model || !cell || !Core::Finite(a_at)) {
 				return nullptr;
 			}
-			const float k = std::isfinite(a_scale) ? std::clamp(a_scale, 0.5f, 3.0f) : 1.0f;
-			auto*       shown = RE::BSTempEffectParticle::Spawn(cell, 2.0f, model, RE::NiPoint3{}, N(a_at), k, 7, nullptr);
+			const RE::NiPoint3 turn{ 0.0f, 0.0f, std::isfinite(a_heading) ? a_heading : 0.0f };
+			auto*              shown = RE::BSTempEffectParticle::Spawn(cell, 2.0f, model, turn, N(a_at), Scale(a_scale), 7, nullptr);
 			if (shown) {
 				gStats.models.fetch_add(1, std::memory_order_relaxed);
 			}
 			return shown;
 		}
 
-		// A spawned design's mesh is cloned by a task of the game's, so its blocks are tinted once they are there; the
-		// material is copied first, as every copy of a mesh shares the loaded one.
-		struct PendingTint
+		[[nodiscard]] float HeadingOf(RE::Projectile* a_p) { return a_p ? a_p->GetAngleZ() : 0.0f; }
+
+		// the height of the ground under a meeting, as the design's `ClashGround` node holds it (its bouncing pieces land
+		// there): the land right under it, else the shooter's feet (indoors), else the 100 the designs assume
+		[[nodiscard]] float GroundBelow(RE::Projectile* a_p, Vec3 a_at, float a_scale)
+		{
+			float feet = a_at.z - 100.0f;
+			float land = 0.0f;
+			if (auto* tes = RE::TES::GetSingleton(); tes && tes->GetLandHeight(N(a_at), land)) {
+				feet = land;
+			} else if (auto shooter = a_p ? a_p->GetProjectileRuntimeData().shooter.get() : RE::NiPointer<RE::TESObjectREFR>()) {
+				feet = shooter->GetPositionZ();
+			}
+			return std::clamp(feet - a_at.z, -400.0f, -10.0f) / Scale(a_scale);
+		}
+
+		// A spawned design's mesh is cloned by a task of the game's, so it is finished once it is there: its blocks tinted
+		// (the material copied first, as every copy of a mesh shares the loaded one) and its ground put under it.
+		struct PendingArt
 		{
 			RE::NiPointer<RE::BSTempEffect> effect;
-			Core::Rgb                       light;
+			std::optional<Core::Rgb>        light;
+			float                           ground{ -100.0f };
+			float                           scale{ 1.0f };
+			bool                            casts{ false };  // it casts the clash's real light (a family's design, not a pair's extra)
 			int                             frames{ 0 };
 		};
-		std::vector<PendingTint> gTints;
+		std::vector<PendingArt> gArrivals;
 
 		[[nodiscard]] bool Tint(RE::NiAVObject* a_root, Core::Rgb a_light)
 		{
@@ -308,38 +329,68 @@ namespace Crossfire
 			return any;
 		}
 
-		void TintLater(RE::BSTempEffectParticle* a_shown, const Info* a_from)
+		void Arrive(RE::BSTempEffectParticle* a_shown, std::optional<Core::Rgb> a_light, float a_ground, float a_scale, bool a_casts)
 		{
-			if (a_shown && a_from && a_from->light && gTints.size() < 64) {
-				gTints.push_back({ RE::NiPointer<RE::BSTempEffect>(a_shown), *a_from->light });
+			if (a_shown && gArrivals.size() < 64) {
+				gArrivals.push_back({ RE::NiPointer<RE::BSTempEffect>(a_shown), a_light, a_ground, Scale(a_scale), a_casts });
 			}
 		}
 
-		// once a frame: the designs whose meshes have arrived take their spell's color; one still empty after a second is let go
-		void TintArrived()
+		// its light's color, else its design's own: a spell with no light (an arrow) is tinted and lit all the same
+		[[nodiscard]] std::optional<Core::Rgb> LightOf(const Info* a_from)
 		{
-			std::erase_if(gTints, [](PendingTint& t) {
-				auto* shown = static_cast<RE::BSTempEffectParticle*>(t.effect.get());
+			return a_from ? std::optional(a_from->light.value_or(Core::LookTint(a_from->look))) : std::nullopt;
+		}
+
+		// the light-carrier layers (named Light...) hidden: ENB and Community Shaders then make no particle lights of them
+		void HideCarriers(RE::NiAVObject* a_root)
+		{
+			RE::BSVisit::TraverseScenegraphGeometries(a_root, [](RE::BSGeometry* a_geometry) {
+				if (const char* name = a_geometry->name.c_str(); name && std::string_view(name).starts_with("Light")) {
+					a_geometry->SetAppCulled(true);
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+		}
+
+		// once a frame: the designs whose meshes have arrived take their spell's color, their ground and their light; one still
+		// empty after 60 frames is let go
+		void ArtArrived(const Core::Config& a_cfg)
+		{
+			static const RE::BSFixedString ground{ "ClashGround" };
+			std::erase_if(gArrivals, [&a_cfg](PendingArt& a) {
+				auto* shown = static_cast<RE::BSTempEffectParticle*>(a.effect.get());
 				if (shown && shown->particleObject) {
-					if (Tint(shown->particleObject.get(), t.light)) {
+					auto* root = shown->particleObject.get();
+					if (a.light && Tint(root, *a.light)) {
 						gStats.tinted.fetch_add(1, std::memory_order_relaxed);
+					}
+					if (auto* node = root->GetObjectByName(ground)) {
+						node->local.translate.z = a.ground;
+					}
+					if (!a_cfg.particleLights) {
+						HideCarriers(root);
+					}
+					if (a.casts && a.light) {
+						LightDesign(root, *a.light, a.scale, a_cfg.clashLight);
 					}
 					return true;
 				}
-				return !shown || ++t.frames > 60;
+				return !shown || ++a.frames > 60;
 			});
 		}
 
 		// what a clash shows where a projectile went: its own (or its element's) explosion when it only shows, else its
 		// element's stand-in model, and its look's design in its own color (and `a_also`'s, when it looks different).
-		// False when there was nothing to show, or the limiter held it back.
+		// False when there was nothing to show, or the limiter held it back. a_design false: the burst only, no design.
 		bool ShowBurst(RE::Projectile* a_p, const RE::BGSProjectile* a_base, const Info& a_info, Vec3 a_at, std::uint64_t a_pair,
-			const Core::Config& a_cfg, const Info* a_also = nullptr)
+			const Core::Config& a_cfg, const Info* a_also = nullptr, bool a_design = true)
 		{
 			auto*       explosion = BurstOf(a_p, a_base, a_info.element, a_cfg);
 			const char* model = !explosion && a_cfg.standInBursts ? StandInModel(a_info.element) : nullptr;
-			const char* art = ClashArt(a_info.look);
-			const char* also = a_also && a_also->look != a_info.look ? ClashArt(a_also->look) : nullptr;
+			const bool  designs = a_design && a_cfg.designs;
+			const char* art = designs ? ClashArt(a_info.look) : nullptr;
+			const char* also = designs && a_also && a_also->look != a_info.look ? ClashArt(a_also->look) : nullptr;
 			if ((!explosion && !model && !art && !also) || !gBursts.Allow(a_pair)) {
 				return false;
 			}
@@ -348,9 +399,19 @@ namespace Crossfire
 			} else if (model) {
 				ModelHere(model, a_at, a_cfg.burstScale, a_p);
 			}
-			TintLater(ModelHere(art, a_at, a_cfg.burstScale, a_p), &a_info);
-			TintLater(ModelHere(also, a_at, a_cfg.burstScale, a_p), a_also);
+			const float heading = HeadingOf(a_p);
+			const float ground = GroundBelow(a_p, a_at, a_cfg.burstScale);
+			Arrive(ModelHere(art, a_at, a_cfg.burstScale, a_p, heading), LightOf(&a_info), ground, a_cfg.burstScale, true);
+			// one light a clash: the second family's design is tinted but casts none
+			Arrive(ModelHere(also, a_at, a_cfg.burstScale, a_p, heading), LightOf(a_also), ground, a_cfg.burstScale, !art);
 			return true;
+		}
+
+		// a pair's design: the same spell meeting itself may have one for its look (lightning's has no rings)
+		[[nodiscard]] const char* PairArtFor(Core::Look a_look, std::string_view a_pair, bool a_same)
+		{
+			const char* art = a_same && !a_pair.empty() ? PairArt(std::format("{}{}", a_pair, Core::LookName(a_look))) : nullptr;
+			return art ? art : PairArt(a_pair);
 		}
 
 		// a special pair's own design on top of both bursts (fire and frost: steam; the same spell: resonance) - only where
@@ -358,27 +419,36 @@ namespace Crossfire
 		void ShowPair(const Info& a, const Info& b, Vec3 a_at, RE::Projectile* a_p, const Core::Config& a_cfg)
 		{
 			const bool same = a.spell && a.spell == b.spell;
-			if (const char* art = PairArt(Core::PairOf(a.look, b.look, same))) {
-				if (auto* shown = ModelHere(art, a_at, a_cfg.burstScale, a_p)) {
+			if (const char* art = a_cfg.designs ? PairArtFor(a.look, Core::PairOf(a.look, b.look, same), same) : nullptr) {
+				if (auto* shown = ModelHere(art, a_at, a_cfg.burstScale, a_p, HeadingOf(a_p))) {
 					gStats.pairs.fetch_add(1, std::memory_order_relaxed);
-					TintLater(shown, same ? &a : nullptr);
+					Arrive(shown, same ? LightOf(&a) : std::nullopt, GroundBelow(a_p, a_at, a_cfg.burstScale), a_cfg.burstScale, false);
 				}
 			}
 		}
 
+		// one of this frame's projectiles killed: remembered (never touched again) and counted
+		template <class Count>
+		void KillEntry(Entry& a_e, Count& a_count)
+		{
+			a_e.ref->Kill();
+			a_e.killed = true;
+			gKilled.insert_or_assign(a_e.handle, gClock);
+			a_count.fetch_add(1, std::memory_order_relaxed);
+		}
+
 		// true when it burst where it went
-		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg)
+		// a_also: the other projectile's look, when it dies in the same clash (one burst shows both designs)
+		bool Settle(Entry& a_e, bool a_kill, float a_before, float a_after, Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_cfg,
+			const Info* a_also = nullptr)
 		{
 			auto* p = a_e.ref.get();
 			if (a_e.ghost || !p) {
 				return false;  // a bolt's line kept after its projectile went: immune, nothing to change
 			}
 			if (a_kill) {
-				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg);
-				p->Kill();
-				a_e.killed = true;
-				gKilled.insert_or_assign(a_e.handle, gClock);
-				gStats.destroyed.fetch_add(1, std::memory_order_relaxed);
+				const bool burst = a_cfg.explosions && ShowBurst(p, a_e.base, a_e.info, a_at, a_pair, a_cfg, a_also);
+				KillEntry(a_e, gStats.destroyed);
 				return burst;
 			}
 			if (a_after < a_before) {
@@ -459,7 +529,8 @@ namespace Crossfire
 		gBodies.clear();
 		gContacts.clear();
 		gStreams.clear();
-		gTints.clear();
+		gArrivals.clear();
+		ClearLights();
 		ClearInfo();              // keyed by form addresses: a spell or enchantment made in play is freed with its game
 		Struggles::Reset(false);  // the handles it holds belong to the world that went away
 		gBursts = {};
@@ -470,18 +541,23 @@ namespace Crossfire
 
 	void Update(float a_delta)
 	{
+		NotePassRan();
 		const auto& cfg = Live();
-		if (!cfg.enabled || !std::isfinite(a_delta) || a_delta <= 0.0f) {
+		UpdateLights(std::isfinite(a_delta) ? a_delta : 0.0f);
+		if (!cfg.enabled) {
 			if (!gTracks.empty() || Struggles::Active()) {
 				Struggles::Reset(true);  // held beams get their range back first, while their handles still mean something
-				Reset();                 // off, or time stood still: whatever we remembered is stale when it moves again
+				Reset();                 // off: whatever we remembered is stale when it is switched on again
 			}
 			return;
+		}
+		if (!std::isfinite(a_delta) || a_delta <= 0.0f) {
+			return;  // time stood still this frame: nothing moved, so nothing is judged
 		}
 		a_delta = std::min(a_delta, 0.25f);
 		++gFrame;
 		gClock += static_cast<double>(a_delta);
-		TintArrived();
+		ArtArrived(cfg);
 
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		auto* myCell = player ? player->GetParentCell() : nullptr;
@@ -790,18 +866,19 @@ namespace Crossfire
 						c.touch.point.y, c.touch.point.z);
 				}
 				Tell(a, b, o, c.touch.point, pair, cfg);
+				ClashEvent(Core::ElementName(a.info.element), Core::ElementName(b.info.element), !a.ghost, !b.ghost, a.player || b.player);
 				if (cfg.explosions) {
-					Entry* live = !a.ghost && a.ref ? &a : (!b.ghost && b.ref ? &b : nullptr);
-					if (ShowBurst(live ? live->ref.get() : nullptr, live ? live->base : a.base, a.info, c.touch.point, pair, cfg, &b.info)) {
+					// the burst is the live projectile's own; the other's look rides with it
+					const Entry* live = !a.ghost && a.ref ? &a : (!b.ghost && b.ref ? &b : nullptr);
+					const Entry& shown = live ? *live : a;
+					const Entry& other = &shown == &a ? b : a;
+					if (ShowBurst(live ? live->ref.get() : nullptr, shown.base, shown.info, c.touch.point, pair, cfg, &other.info)) {
 						ShowPair(a.info, b.info, c.touch.point, live ? live->ref.get() : nullptr, cfg);
 					}
 				}
 				for (Entry* x : { &a, &b }) {
 					if (!x->ghost && x->ref) {
-						x->ref->Kill();
-						x->killed = true;
-						gKilled.insert_or_assign(x->handle, gClock);
-						gStats.destroyed.fetch_add(1, std::memory_order_relaxed);
+						KillEntry(*x, gStats.destroyed);
 					}
 				}
 				continue;
@@ -826,8 +903,9 @@ namespace Crossfire
 			}
 			Tell(a, b, o, c.touch.point, pair, cfg);  // before Settle: it reads the strengths as they were
 			RE::Projectile* at = !a.ghost && a.ref ? a.ref.get() : (!b.ghost && b.ref ? b.ref.get() : nullptr);
-			const bool      burstA = Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg);
-			const bool      burstB = Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg);
+			// both destroyed: the first burst carries both designs - the burst limiter would hold the second back
+			const bool burstA = Settle(a, o.killA, sa, o.strengthA, c.touch.point, pair, cfg, o.killB ? &b.info : nullptr);
+			const bool burstB = Settle(b, o.killB, sb, o.strengthB, c.touch.point, pair, cfg, o.killA ? &a.info : nullptr);
 			if (burstA || burstB) {
 				ShowPair(a.info, b.info, c.touch.point, at, cfg);
 			}
@@ -860,13 +938,10 @@ namespace Crossfire
 		if (e.killed || e.ghost || !e.ref) {
 			return;
 		}
-		e.ref->Kill();
-		e.killed = true;
-		gKilled.insert_or_assign(e.handle, gClock);
-		gStats.cut.fetch_add(1, std::memory_order_relaxed);
+		KillEntry(e, gStats.cut);
 	}
 
-	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config)
+	bool BurstAt(std::size_t a_entry, Core::Vec3 a_at, std::uint64_t a_pair, const Core::Config& a_config, const Info* a_also, bool a_design)
 	{
 		if (a_entry >= gEntries.size() || !a_config.explosions) {
 			return false;
@@ -876,6 +951,37 @@ namespace Crossfire
 		if (!p) {
 			return false;
 		}
-		return ShowBurst(p, e.base, e.info, a_at, a_pair, a_config);
+		return ShowBurst(p, e.base, e.info, a_at, a_pair, a_config, a_also, a_design);
+	}
+
+	bool ShowDesign(std::string_view a_look, std::string_view a_pair, std::optional<Core::Rgb> a_color, float a_ahead, float a_up)
+	{
+		std::optional<Core::Look> look;
+		for (std::size_t l = 0; l < Core::kLooks; ++l) {
+			if (Core::LookName(static_cast<Core::Look>(l)) == a_look) {
+				look = static_cast<Core::Look>(l);
+			}
+		}
+		auto* tasks = SKSE::GetTaskInterface();
+		// the art is looked up at data load: until then (and for a look or pair with no mesh) there is nothing to show
+		if (!look || !ClashArtReady() || !tasks || !std::isfinite(a_ahead) || !std::isfinite(a_up) ||
+			!(a_pair.empty() ? ClashArt(*look) : PairArtFor(*look, a_pair, a_pair == "Resonance"))) {
+			return false;
+		}
+		tasks->AddTask([look = *look, pair = std::string(a_pair), a_color, a_ahead, a_up]() {
+			Safe::Guarded("a design shown for DevBench", [&] {
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!player) {
+					return;
+				}
+				const float      heading = player->GetAngleZ();
+				const auto       p = player->GetPosition();
+				const Core::Vec3 at{ p.x + a_ahead * std::sin(heading), p.y + a_ahead * std::cos(heading), p.z + a_up };
+				const char*      art = pair.empty() ? ClashArt(look) : PairArtFor(look, pair, pair == "Resonance");
+				Arrive(ModelHere(art, at, 1.0f, nullptr, heading), a_color ? a_color : std::optional(Core::LookTint(look)), (std::max)(-a_up, -400.0f),
+					1.0f, pair.empty());
+			});
+		});
+		return true;
 	}
 }

@@ -1,5 +1,5 @@
-// MenuStyle.h - the shared look of izzydoingit's SKSE Menu Framework pages (one identical copy per plugin, like
-// Translation.h). Each mod passes its own accent; the layout, the icon headers, the notes and the color picker with its
+// MenuStyle.h - the shared look of izzydoingit's SKSE Menu Framework pages (one identical copy in each live plugin, like
+// Translation.h; a parked plugin keeps the copy it was built with). Each mod passes its own accent; the layout, the icon headers, the notes and the color picker with its
 // spectrum bar are the same everywhere.
 // Copyright (C) 2026 izzydoingit. GPL-3.0-or-later.
 //
@@ -110,11 +110,16 @@ namespace MenuStyle
 		PopTextWrapPos();
 	}
 
-	// a hover tooltip on the item just drawn
+	// a hover tooltip on the item just drawn, wrapped to a readable width so a long one never runs past the screen
 	inline void Tip(const char* a_text)
 	{
 		using namespace ImGuiMCP;
-		SetItemTooltip("%s", a_text);
+		if (BeginItemTooltip()) {
+			PushTextWrapPos(GetFontSize() * 30.0f);
+			TextUnformatted(a_text);
+			PopTextWrapPos();
+			EndTooltip();
+		}
 	}
 
 	// a small round dot and a label: on (accent) or off (muted)

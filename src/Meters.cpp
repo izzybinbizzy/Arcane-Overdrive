@@ -87,7 +87,8 @@ namespace Plugin
 			return a_t;
 		}
 
-		// an actor whose spells build heat: the player, and with Enemies on, anyone else who is not on the player's side
+		// an actor whose spells build heat: the player, and with Enemies on, anyone alive and hostile to her who is not hers
+		// (Marks.cpp's Hurtable) - never a court wizard or a bystander. Main thread: it asks the game about factions
 		bool Heats(RE::Actor* a_actor, const Settings& a_s)
 		{
 			if (!a_actor) {
@@ -96,7 +97,11 @@ namespace Plugin
 			if (a_actor->IsPlayerRef()) {
 				return true;
 			}
-			return a_s.enemies && !a_actor->IsPlayerTeammate() && !a_actor->IsDead();
+			auto* player = RE::PlayerCharacter::GetSingleton();
+			if (!a_s.enemies || !player || a_actor->IsDead() || a_actor->IsPlayerTeammate() || !a_actor->IsHostileToActor(player)) {
+				return false;
+			}
+			return !a_actor->IsCommandedActor() || a_actor->GetCommandingActor().get() != player;
 		}
 
 		Track* TrackOf(RE::Actor* a_actor, const Settings& a_s, bool a_make)
@@ -158,24 +163,33 @@ namespace Plugin
 			return true;
 		}
 
-		// slow magicka: take back part of this frame's regeneration
-		void Regen(RE::Actor* a_actor, Track& a_track, const Heat::Tuning& a_t, float a_delta)
+		// slow magicka: part of this frame's regeneration, to take back once the meters' lock is let go -> how much
+		float Regen(RE::Actor* a_actor, Track& a_track, const Heat::Tuning& a_t, float a_delta)
 		{
 			auto*       owner = a_actor->AsActorValueOwner();
 			const float now = owner->GetActorValue(RE::ActorValue::kMagicka);
 			const float regen = a_track.meter.MagickaRegen(a_t);
+			float       back = 0.0f;
 			if (regen < 1.0f && a_track.lastMagicka >= 0.0f && a_delta > 0.0f) {
 				// what natural regeneration could give in this frame, with room to spare (a quarter of the pool a second);
 				// a bigger rise is a potion or a spell, and is left alone
 				const float pool = std::max(owner->GetPermanentActorValue(RE::ActorValue::kMagicka), 1.0f);
-				const float back = Heat::TakeBack(a_track.lastMagicka, now, pool * 0.25f * a_delta + 0.5f, regen);
-				if (back > 0.0f) {
-					owner->DamageActorValue(RE::ActorValue::kMagicka, back);
-					a_track.lastMagicka = now - back;
-					return;
-				}
+				back = Heat::TakeBack(a_track.lastMagicka, now, pool * 0.25f * a_delta + 0.5f, regen);
 			}
-			a_track.lastMagicka = now;
+			a_track.lastMagicka = now - std::max(back, 0.0f);
+			return back;
+		}
+
+		// a keyboard key's own state, for a release the key event never brought (an alt-tab); other devices are trusted
+		bool KeyStillDown(int a_code)
+		{
+			if (a_code < 0 || a_code >= 256) {
+				return true;
+			}
+			auto* input = RE::BSInputDeviceManager::GetSingleton();
+			auto* keyboard = input ? input->GetKeyboard() : nullptr;
+			// the bytes IsPressed reads; IsPressed itself links device code CommonLib does not have
+			return !keyboard || (keyboard->GetRuntimeData().curState[static_cast<std::size_t>(a_code)] & 0x80) != 0;
 		}
 
 		// a misfire with Backlash on: a stagger, and a bite out of the magicka pool
@@ -220,22 +234,13 @@ namespace Plugin
 	namespace
 	{
 		std::atomic<float> gFrameUsAvg{ 0.0f }, gFrameUsMax{ 0.0f };
+	}
 
-		// Frame's own time, taken whichever way it returns
-		struct FrameTimer
-		{
-			std::chrono::steady_clock::time_point start{ std::chrono::steady_clock::now() };
-			FrameTimer() = default;
-			FrameTimer(const FrameTimer&) = delete;
-			FrameTimer& operator=(const FrameTimer&) = delete;
-			~FrameTimer()
-			{
-				const float us = std::chrono::duration<float, std::micro>(std::chrono::steady_clock::now() - start).count();
-				const float avg = gFrameUsAvg.load(std::memory_order_relaxed);
-				gFrameUsAvg.store(avg <= 0.0f ? us : avg + (us - avg) * 0.05f, std::memory_order_relaxed);  // about the last 20 frames
-				gFrameUsMax.store(std::max(gFrameUsMax.load(std::memory_order_relaxed), us), std::memory_order_relaxed);
-			}
-		};
+	void NoteFrameCost(float a_us)
+	{
+		const float avg = gFrameUsAvg.load(std::memory_order_relaxed);
+		gFrameUsAvg.store(avg <= 0.0f ? a_us : avg + (a_us - avg) * 0.05f, std::memory_order_relaxed);  // about the last 20 frames
+		gFrameUsMax.store(std::max(gFrameUsMax.load(std::memory_order_relaxed), a_us), std::memory_order_relaxed);
 	}
 
 	FrameCost FrameCostNow() { return { gFrameUsAvg.load(), gFrameUsMax.load() }; }
@@ -248,27 +253,24 @@ namespace Plugin
 
 	void Frame(float a_delta)
 	{
-		const FrameTimer timer;
 		NewReadFrame();
 		const auto  s = Config();
 		const float dt = std::isfinite(a_delta) ? std::clamp(a_delta, 0.0f, 0.25f) : 0.0f;
 		auto*       player = RE::PlayerCharacter::GetSingleton();
 		if (!s.enabled || !player) {
-			ResetAll();
-			ReleaseHands();
-			ReleaseOverload();
-			ReleaseMarks();
+			ReleaseAll();
 			UpdateTrueHud({}, s);  // switched off: TrueHUD's special bar is given back
 			PublishCharges(0.0f, {});
 			std::lock_guard lock(gViewLock);
 			gView = {};
 			return;
 		}
-		const auto& t = s.tuning;
-		const auto  enemyTuning = EnemyTuning(t);
-		Heat::Stage stage = Heat::Stage::kCold;
-		MeterView   view;
-		bool        backlash = false;
+		const auto&                                             t = s.tuning;
+		const auto                                              enemyTuning = EnemyTuning(t);
+		Heat::Stage                                             stage = Heat::Stage::kCold;
+		MeterView                                               view;
+		bool                                                    backlash = false;
+		std::vector<std::pair<RE::NiPointer<RE::Actor>, float>> takeBack;  // slow magicka, taken after the lock
 		{
 			std::lock_guard   lock(gLock);
 			std::vector<Cast> casts;
@@ -313,10 +315,15 @@ namespace Plugin
 			}
 
 			Held(player, gPlayer, t, s, dt);
+			if (t.mode != Heat::OverdriveMode::kKey || !KeyStillDown(s.overdriveKey)) {
+				gKeyHeld = false;
+			}
 			const bool focusing = (t.mode == Heat::OverdriveMode::kKey && gKeyHeld.load()) || HandsCharged(player);
 			gPlayer.meter.Focus(t, focusing, dt);
 			gPlayer.meter.Tick(t, dt);
-			Regen(player, gPlayer, t, dt);
+			if (const float back = Regen(player, gPlayer, t, dt); back > 0.0f) {
+				takeBack.emplace_back(RE::NiPointer<RE::Actor>(player), back);
+			}
 			gMisfire = std::max(gMisfire - dt, 0.0f);
 			for (auto it = gEnemies.begin(); it != gEnemies.end();) {
 				const auto actorPtr = it->second.actor.get();
@@ -325,10 +332,13 @@ namespace Plugin
 				if (actor) {
 					Held(actor, track, enemyTuning, s, dt);
 					track.meter.Tick(enemyTuning, dt);
-					Regen(actor, track, enemyTuning, dt);
+					if (const float back = Regen(actor, track, enemyTuning, dt); back > 0.0f) {
+						takeBack.emplace_back(actorPtr, back);
+					}
 				}
 				track.idle = track.meter.Idle() ? track.idle + dt : 0.0f;
-				if (!actor || !s.enemies || actor->IsDead() || track.idle > kForgetEnemy) {
+				// one no longer hostile (calmed, yielded) loses its meter, so its spells stop taking the bonus (Multiplier)
+				if (!actor || !s.enemies || track.idle > kForgetEnemy || !Heats(actor, s)) {
 					it = gEnemies.erase(it);
 				} else {
 					++it;
@@ -365,10 +375,14 @@ namespace Plugin
 		if (backlash) {
 			Backlash(player, t, s.debugLog);
 		}
+		for (const auto& [actor, back] : takeBack) {
+			actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kMagicka, back);
+		}
 		view.boosted = gBoosted.load();
 		UpdateOverload(view, s, dt);  // the spells grow with the charge, sputter in the cooldown and at a misfire - before the hand lights read it
 		UpdateHands(stage, stage, s);
 		UpdateMarks(view, s, dt);  // Overheating fire / frost spells leave scorch / frost marks that hurt
+		ReleaseSpellsNow();
 		UpdateTrueHud(view, s);
 		std::lock_guard lock(gViewLock);
 		gView = view;
@@ -380,13 +394,12 @@ namespace Plugin
 			return 1.0f;
 		}
 		const auto s = Config();
-		if (!s.enabled || !Heats(a_caster, s) || !Boosted(a_effect, s.boost)) {
+		// any thread: only the player, or an enemy whose meter the main thread already made (Heats judged it then)
+		if (!s.enabled || (!a_caster->IsPlayerRef() && !s.enemies) || !Boosted(a_effect, s.boost)) {
 			return 1.0f;
 		}
 		const auto info = Read(a_item);
-		using K = Heat::SpellFacts::Kind;
-		const bool spell = info.facts.kind == K::kSpell || ((info.facts.kind == K::kStaff || info.facts.kind == K::kScroll) && s.counts.stavesAndScrolls);
-		if (!spell) {
+		if (!Heat::KindCounts(info.facts.kind, s.counts)) {
 			return 1.0f;
 		}
 		std::lock_guard lock(gLock);
@@ -396,6 +409,14 @@ namespace Plugin
 			++gBoosted;
 		}
 		return k;
+	}
+
+	void ReleaseAll()
+	{
+		ResetAll();
+		ReleaseHands();
+		ReleaseOverload();
+		ReleaseMarks();
 	}
 
 	void ResetAll()

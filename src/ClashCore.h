@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Crossfire::Core
@@ -222,7 +223,7 @@ namespace Crossfire::Core
 	// how big a cone is once it has gone `a_travelled` units
 	[[nodiscard]] float ConeRadius(float a_initial, float a_travelled, float a_tangent) noexcept;
 
-	// ------------------------------------------------------------------ the per-frame decisions Clash.cpp makes
+	// ------------------------------------------------------------------ the per-frame decisions ClashPass.cpp makes
 	struct Config;
 
 	// a projectile's size for Crossfire: its own collision radius scaled, plus the aim assist, within the limits
@@ -306,6 +307,8 @@ namespace Crossfire::Core
 	{
 		std::uint8_t r{ 0 }, g{ 0 }, b{ 0 };
 	};
+	// a design's own color: its tint and its light's for a spell with no light of its own (an arrow, a plain bolt)
+	[[nodiscard]] Rgb LookTint(Look a_look) noexcept;
 
 	struct LookFacts
 	{
@@ -359,7 +362,7 @@ namespace Crossfire::Core
 	// ------------------------------------------------------------------ spell struggles
 	// Two hostile streams (sprays, held beams, breath) that meet lock together, and the stronger caster pushes the
 	// meeting point back until it breaks through. A struggle belongs to a pair of shooters, never to projectiles: a spray
-	// is hundreds of particles that live a moment each, and a beam may be launched again. What is here decides; Struggle.cpp
+	// is hundreds of particles that live a moment each, and a beam may be launched again. What is here decides; ClashStruggle.cpp
 	// reads the actors, feeds this, and carries out what a step says.
 	struct StruggleConfig;
 
@@ -403,16 +406,19 @@ namespace Crossfire::Core
 	inline constexpr float kDrawBand = 0.02f;  // at the time limit, closer to even than this is a draw
 	inline constexpr float kSurgeAt = 0.6f;    // how far back a side is pushed before it surges
 	inline constexpr float kSurgeTime = 3.0f;
-	inline constexpr float kBreathPace = 2.0f;    // a breath lasts two or three seconds, so a lock with one moves twice as fast
-	inline constexpr float kCooldownTime = 2.0f;  // after a struggle the pair pass through each other this long, then may lock again
-	inline constexpr float kSparkEvery = 0.5f;    // a burst at the lock while both push
-	inline constexpr float kWobble = 0.03f;       // the meeting point trembles this share of the way, for looks only
-	inline constexpr float kHandGap = 60.0f;      // the meeting point never comes closer to either caster's hands
-	inline constexpr float kKeepShare = 0.8f;     // of MinDistance: casters closer than this call a lock off
-	inline constexpr float kFacingCos = 0.643f;   // cos 50 degrees
-	inline constexpr float kMinLead = 0.15f;      // the least lead of the more skilled caster when skill always wins
-	inline constexpr float kSkillPoint = 0.02f;   // a point of skill over the other is 2% more push (at weight 1)
-	inline constexpr float kLevelPoint = 0.02f;   // and a level, 2%
+	inline constexpr float kBreathPace = 2.0f;       // a breath lasts two or three seconds, so a lock with one moves twice as fast
+	inline constexpr float kCooldownTime = 2.0f;     // after a struggle the pair pass through each other this long, then may lock again
+	inline constexpr float kSparkEvery = 0.5f;       // a burst at the lock while both push
+	inline constexpr float kLockDesignEvery = 1.0f;  // a lock's clash design at most this often (one plays 2 s)
+	inline constexpr float kWobble = 0.03f;          // the meeting point trembles this share of the way, for looks only
+	inline constexpr float kHandGap = 60.0f;         // the meeting point never comes closer to either caster's hands
+	inline constexpr float kKeepShare = 0.8f;        // of MinDistance: casters closer than this call a lock off
+	inline constexpr float kFacingCos = 0.643f;      // cos 50 degrees
+	inline constexpr float kMinLead = 0.15f;         // the least lead of the more skilled caster when skill always wins
+	inline constexpr float kSkillPoint = 0.02f;      // a point of skill over the other is 2% more push (at weight 1)
+	inline constexpr float kLevelPoint = 0.02f;      // and a level, 2%
+	inline constexpr float kKnotBeat = 1.2f;         // seconds between the meeting point's pulses on the struggle bar, from the lock
+	inline constexpr float kOnBeat = 0.15f;          // an Overdrive released this close to a pulse is on the beat
 
 	// One side's pusher, read from the live actor every frame. A field that is not finite counts as its default here.
 	struct Caster
@@ -442,8 +448,9 @@ namespace Crossfire::Core
 	// How much A outpushes B, -1..1: (Pa - Pb) / (Pa + Pb), so a caster twice as strong leads by 1/3. Exactly the negative
 	// of B's over A. With SkillAlwaysWins, when both cast from a school and one has at least a point more skill, that
 	// one leads by at least kMinLead whatever else there is: the rest only changes how fast. a_surge*: surging now.
+	// a_over*: in an Overdrive released during this lock (Overdrive Breakpoint), pushing BreakpointPower times harder.
 	[[nodiscard]] float Advantage(const Caster& a, const Caster& b, const StruggleConfig& a_config, bool a_surgeA = false,
-		bool a_surgeB = false) noexcept;
+		bool a_surgeB = false, bool a_overA = false, bool a_overB = false) noexcept;
 	// the share of the way from the meeting point to a caster's hands the lock moves in a second at a lead of 1
 	[[nodiscard]] float PushRate(const StruggleConfig& a_config) noexcept;
 	// seconds from the lock to the breakthrough at this lead and pace (kBreathPace with a breath, else 1); 1e6 for never
@@ -483,6 +490,9 @@ namespace Crossfire::Core
 		float         timer{ 0.0f };                   // seconds in kBroken or kCooldown
 		float         lead{ 0.0f };                    // the last step's Advantage
 		float         surgeA{ 0.0f }, surgeB{ 0.0f };  // seconds of surge left
+		float         overA{ 0.0f }, overB{ 0.0f };    // seconds left of an Overdrive released during the lock (Breakpoint)
+		float         shoveAge{ -1.0f };               // the lock's age at the last Breakpoint shove, -1 none (the bar's flash)
+		bool          shoveOnBeat{ false };            // that shove came on the beat
 		float         nextSpark{ kSparkEvery };
 		bool          surgedA{ false }, surgedB{ false };  // each side surges once
 		std::uint64_t seed{ 0 };
@@ -524,6 +534,16 @@ namespace Crossfire::Core
 		const StruggleConfig& a_config) noexcept;
 	// the magicka a side pays over `a_dt` for being pushed back `a_towardMe` (0..1) of the way, on top of its spell's
 	[[nodiscard]] float MagickaDrain(float a_towardMe, float a_cost, float a_dt, const StruggleConfig& a_config) noexcept;
+
+	// Overdrive Breakpoint (his pick for the struggle, 2026-10-24): a caster who releases Overdrive during a lock shoves the
+	// meeting point toward the other's hands, harder when released on the bar's pulse, and pushes harder for the burst.
+	// on the beat: within kOnBeat of a pulse of the meeting point, which pulses every kKnotBeat seconds of the lock
+	[[nodiscard]] bool OnTheBeat(float a_age) noexcept;
+	// the shove for a release at this age of the lock, a share of the way (BreakpointShove, times BreakpointBeat on the beat)
+	[[nodiscard]] float BreakpointShove(float a_age, const StruggleConfig& a_config) noexcept;
+	// a_sideA (else B) released Overdrive for a_seconds: the meeting point shoved, the push raised for that long -> the shove
+	// given (0 when Breakpoint is off or the struggle is not locked)
+	float Breakpoint(Struggle& a_struggle, bool a_sideA, float a_seconds, const StruggleConfig& a_config) noexcept;
 
 	// a point measured along the line from one point to another, and how far off that line it is
 	struct AxisPoint
@@ -634,6 +654,10 @@ namespace Crossfire::Core
 		float magickaPressure{ 0.5f };  // times the spell's cost, per second, for the side pushed right back
 		bool  surge{ false };
 		float surgePower{ 1.5f };
+		bool  breakpoint{ true };        // Overdrive released during a lock shoves the meeting point (Overdrive Breakpoint)
+		float breakpointShove{ 0.25f };  // the share of the way it moves
+		float breakpointBeat{ 1.6f };    // times that, released on the meeting point's pulse
+		float breakpointPower{ 2.0f };   // how much harder its caster pushes for the rest of the burst
 		// [Aftermath]
 		bool  breakCast{ true };
 		float breakTime{ 1.5f };  // seconds the overwhelmed caster reels
@@ -649,7 +673,7 @@ namespace Crossfire::Core
 		// [Show]
 		bool  lockBursts{ true };
 		float cameraShake{ 0.4f };
-		bool  bar{ true };
+		bool  bar{ true };         // the struggle bar (Overdrive Breakpoint's look, his yes - checklist 318)
 		float barHeight{ 82.0f };  // percent of the way down the screen
 		float barScale{ 1.0f };
 		float barOpacity{ 0.9f };
@@ -681,9 +705,12 @@ namespace Crossfire::Core
 		Tuning tuning;
 		// [Effects]
 		bool  explosions{ true };
-		bool  safeExplosionsOnly{ true };  // skip an explosion that would do anything but show (damage, enchantment, spawns)
+		bool  safeExplosionsOnly{ true };  // skip an explosion that would do anything but show (damage, enchantment, push, spawns)
 		bool  standInBursts{ true };       // a spell with no burst of its own (Firebolt) bursts as its element's spells do
 		float burstScale{ 1.5f };          // how big a clash's burst is
+		bool  designs{ true };             // a clash's own designed effect, on top of its burst
+		float clashLight{ 100.0f };        // percent: the real light a clash's design casts (0 = none)
+		bool  particleLights{ true };      // the designs' light carriers, which ENB and Community Shaders turn into particle lights
 		int   maxExplosionsPerFrame{ 4 };
 		float explosionCooldown{ 0.12f };
 		int   maxContactsPerFrame{ 32 };
@@ -717,6 +744,9 @@ namespace Crossfire::Core
 	// Reads an ini's text into `a_config` - only what the text sets; a line it cannot use is skipped and said in
 	// `a_warnings` (with its line number). Out-of-range numbers are clamped (and said). Never throws on bad text.
 	void ParseIni(std::string_view a_text, Config& a_config, std::vector<std::string>& a_warnings);
+
+	// every setting the file holds with its value now (an on / off one as 0 / 1), in the file's order
+	[[nodiscard]] std::vector<std::pair<std::string_view, float>> SettingValues(const Config& a_config);
 
 	// the settings file the menu writes: [General] .. [Debug], every value, nothing from the rules. Every key is unique
 	// across the sections, since RangeOf finds a setting by its key alone.

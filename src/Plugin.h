@@ -18,7 +18,8 @@ namespace Plugin
 	[[nodiscard]] Settings Config();
 	void                   SetConfig(const Settings& a_settings);
 	bool                   ApplySetting(std::string_view a_key, int a_value);
-	void                   ApplyPreset(std::size_t a_preset);  // SettingsText::kPresets
+	void                   ApplyPreset(std::size_t a_preset);      // SettingsText::kPresets
+	void                   ApplyVisualPreset(bool a_performance);  // Full or Performance (kVisuals), the clashes' three too; not saved
 	void                   LoadSettings();
 	bool                   ReloadAdvanced();  // the advanced file read again (a hand edit while the game runs)
 	void                   SaveSettings();
@@ -31,9 +32,11 @@ namespace Plugin
 		bool             held{ false };  // a concentration spell
 		int              element{ 0 };   // 0 none, 1 fire, 2 frost, 3 shock: the hand glow's color
 	};
-	[[nodiscard]] SpellInfo     Read(const RE::MagicItem* a_item);
-	void                        NewReadFrame();  // main thread, each frame: Read's kept answers are from this frame on read afresh
-	[[nodiscard]] std::uint32_t ReadFrameNow();  // the frames counted so far (what is kept is kept by it)
+	[[nodiscard]] SpellInfo Read(const RE::MagicItem* a_item);
+	// the item's costliest effect (the game's own "which school is this"), else its first; null for none (the clashes read it too)
+	[[nodiscard]] const RE::EffectSetting* MainEffect(const RE::MagicItem* a_item);
+	void                                   NewReadFrame();  // main thread, each frame: Read's kept answers are from this frame on read afresh
+	[[nodiscard]] std::uint32_t            ReadFrameNow();  // the frames counted so far (what is kept is kept by it)
 	// whether this effect's magnitude is boosted, by the Boost setting (damage only, or every hostile effect)
 	[[nodiscard]] bool Boosted(const RE::EffectSetting* a_effect, Heat::Boost a_boost);
 
@@ -42,14 +45,18 @@ namespace Plugin
 	void Frame(float a_delta);                                      // main thread, every frame, from the player's update
 	struct FrameCost
 	{
-		float usAvg{ 0.0f }, usMax{ 0.0f };  // Frame's own time on the main thread, microseconds (about the last 20 frames; the worst since reset)
+		float usAvg{ 0.0f }, usMax{ 0.0f };  // the whole mod's time a frame on the main thread, microseconds (about the last 20 frames; the worst since the game was loaded)
 	};
+	void                    NoteFrameCost(float a_us);  // main thread: the meters' and the clashes' time this frame
 	[[nodiscard]] FrameCost FrameCostNow();
 	void                    ResetFrameCost();
 	[[nodiscard]] float     Multiplier(RE::Actor* a_caster, const RE::MagicItem* a_item, const RE::EffectSetting* a_effect);  // any thread
-	void                    ResetAll();                                                                                       // a game is loading
-	void                    PressOverdriveKey();                                                                              // any thread: the key went down (acted on next frame, if the game is not in a menu)
-	void                    HoldOverdriveKey(bool a_down);                                                                    // any thread: the key held or let go (the focus gate)
+	// a_text written to a_path.tmp, then swapped in whole (a crash mid-write cannot leave half a file); false and logged on failure
+	bool WriteWhole(const std::filesystem::path& a_path, std::string_view a_text, std::ios::openmode a_mode);
+	void ReleaseAll();                   // the meters reset and every light, art and mark of ours let go
+	void ResetAll();                     // a game is loading
+	void PressOverdriveKey();            // any thread: the key went down (acted on next frame, if the game is not in a menu)
+	void HoldOverdriveKey(bool a_down);  // any thread: the key held or let go (the focus gate)
 	// the bench (DevBench, the Debug page): the player's bars, on the next frame
 	void BenchSetCharge(float a_charge);
 	void BenchSetHeat(float a_heat);
@@ -90,12 +97,18 @@ namespace Plugin
 	void                       UpdateTrueHud(const MeterView& a_v, const Settings& a_s);  // main thread, every frame
 	void                       ForgetTrueHud();                                           // a game is loading
 	[[nodiscard]] TrueHudState TrueHudNow();
+	// the Overdrive bar's color for the Heat now, 0xRRGGBB - TrueHUD's bar and the struggle bar's Overdrive ring wear it
+	[[nodiscard]] std::uint32_t HeatColor(const MeterView& a_v);
 
 	// ------------------------------------------------------------------ Overload.cpp: the overcharge on the spells themselves
 	void                UpdateOverload(const MeterView& a_v, const Settings& a_s, float a_dt);  // main thread, every frame, before the hands
 	void                ReleaseOverload();                                                      // every art and projectile back as it was found
 	[[nodiscard]] float HandLightFactor(std::size_t a_hand);                                    // 1, or a dim ember while that hand's spell sputters out
 	void                NoteSpawned(RE::TESObjectREFR* a_ref);                                  // any thread: an explosion or hazard was just made (the hooks)
+	void                NoteHit(RE::Actor* a_target, RE::FormID a_source);                      // any thread: the player's spell a_source hit a_target (the hit event)
+	// main thread: the player's spell projectiles in the world, gathered once a frame on the first ask (Overload, Marks)
+	[[nodiscard]] const std::vector<RE::NiPointer<RE::Projectile>>& PlayerSpellsNow(RE::PlayerCharacter* a_player);
+	void                                                            ReleaseSpellsNow();  // the end of the frame: they are let go
 	struct OverloadView
 	{
 		float         power{ 1.0f };                          // the spells' size now (Overload::Growth, eased; the focus pull not in it)
@@ -106,6 +119,8 @@ namespace Plugin
 		std::uint32_t explosions{ 0 }, hazards{ 0 };          // ours grown since the game was loaded
 		std::uint32_t flares{ 0 }, sparks{ 0 };               // focus flares and red-zone sparks played since the game was loaded
 		std::uint32_t effectModels{ 0 };                      // of our 8 effect models, how many were found
+		std::uint32_t embers{ 0 }, afterglows{ 0 };           // the lingering effects played since the game was loaded: hand embers,
+		std::uint32_t hitGlows{ 0 }, smoulders{ 0 };          // hand afterglows, hit afterglows, smoulders
 	};
 	[[nodiscard]] OverloadView OverloadNow();
 
@@ -121,6 +136,9 @@ namespace Plugin
 	// ------------------------------------------------------------------ Hands.cpp: the lights on the casting hands
 	void UpdateHands(Heat::Stage a_left, Heat::Stage a_right, const Settings& a_settings);  // main thread
 	void ReleaseHands();                                                                    // every light back as we found it, our own taken down
+	// main thread: where a light of ours on a hand hangs in both views - the third-person body's magic node (a light under the
+	// first-person skeleton lights nothing in the world on ENB / Vanilla)
+	[[nodiscard]] RE::NiNode* HandLightNode(RE::PlayerCharacter* a_player, std::size_t a_hand);
 	struct HandsView
 	{
 		std::size_t scaled{ 0 }, frozen{ 0 }, own{ 0 };

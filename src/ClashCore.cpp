@@ -5,6 +5,7 @@
 // The game-free core (see Core.h). No game header here: tests/ builds this file on its own.
 
 #include "ClashCore.h"
+#include "IniText.h"
 
 #include <algorithm>
 #include <charconv>
@@ -285,25 +286,8 @@ namespace Crossfire::Core
 			return true;
 		}
 
-		[[nodiscard]] char Lower(char c) noexcept { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
-
-		[[nodiscard]] bool SameText(std::string_view a, std::string_view b) noexcept
-		{
-			return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return Lower(x) == Lower(y); });
-		}
-
-		[[nodiscard]] bool Space(char c) noexcept { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f'; }
-
-		[[nodiscard]] std::string_view Trim(std::string_view s) noexcept
-		{
-			while (!s.empty() && Space(s.front())) {
-				s.remove_prefix(1);
-			}
-			while (!s.empty() && Space(s.back())) {
-				s.remove_suffix(1);
-			}
-			return s;
-		}
+		using IniText::SameText;
+		using IniText::Trim;
 
 		[[nodiscard]] float Sanitize(float a_value, float a_fallback) noexcept { return std::isfinite(a_value) ? a_value : a_fallback; }
 	}
@@ -424,39 +408,33 @@ namespace Crossfire::Core
 		return false;
 	}
 
+	namespace
+	{
+		// each action's name first (ActionName), then the other words the rules file accepts for it
+		constexpr std::pair<std::string_view, Action> kActionNames[]{
+			{ "Pass", Action::kPass },
+			{ "Clash", Action::kClash },
+			{ "Annihilate", Action::kAnnihilate },
+			{ "Wins", Action::kWins },
+			{ "Loses", Action::kLoses },
+			{ "Ignore", Action::kPass },
+			{ "None", Action::kPass },
+			{ "Cancel", Action::kAnnihilate },
+			{ "Beats", Action::kWins },
+			{ "LosesTo", Action::kLoses },
+		};
+	}
+
 	std::string_view ActionName(Action a_action) noexcept
 	{
-		switch (a_action) {
-		case Action::kPass:
-			return "Pass";
-		case Action::kClash:
-			return "Clash";
-		case Action::kAnnihilate:
-			return "Annihilate";
-		case Action::kWins:
-			return "Wins";
-		case Action::kLoses:
-			return "Loses";
-		}
-		return "?";
+		const auto it = std::ranges::find(kActionNames, a_action, &std::pair<std::string_view, Action>::second);
+		return it != std::end(kActionNames) ? it->first : "?";
 	}
 
 	bool ParseAction(std::string_view a_text, Action& a_out) noexcept
 	{
 		a_text = Trim(a_text);
-		static constexpr std::pair<std::string_view, Action> kNames[]{
-			{ "Pass", Action::kPass },
-			{ "Ignore", Action::kPass },
-			{ "None", Action::kPass },
-			{ "Clash", Action::kClash },
-			{ "Annihilate", Action::kAnnihilate },
-			{ "Cancel", Action::kAnnihilate },
-			{ "Wins", Action::kWins },
-			{ "Beats", Action::kWins },
-			{ "Loses", Action::kLoses },
-			{ "LosesTo", Action::kLoses },
-		};
-		for (const auto& [name, action] : kNames) {
+		for (const auto& [name, action] : kActionNames) {
 			if (SameText(a_text, name)) {
 				a_out = action;
 				return true;
@@ -718,8 +696,8 @@ namespace Crossfire::Core
 
 		struct Family
 		{
-			Look                  look;
-			std::span<const Word> words;
+			Look                  look{};
+			std::span<const Word> words{};
 		};
 
 		constexpr Word kPhysical[]{ W("arrow"), W("quiver"), W("bounddagger"), W("boundsword"), W("boundmace"), W("boundpike"), W("boundrapier"),
@@ -822,6 +800,16 @@ namespace Crossfire::Core
 	{
 		const auto i = static_cast<std::size_t>(a_look);
 		return i < kLooks ? kLookNames[i] : std::string_view{ "?" };
+	}
+
+	Rgb LookTint(Look a_look) noexcept
+	{
+		// each design's first color, as the designs were drawn (clash designs.py), in Look's order
+		constexpr std::array<Rgb, kLooks> kTints{ { { 251, 162, 96 }, { 152, 203, 222 }, { 146, 136, 230 }, { 125, 150, 100 }, { 100, 212, 255 },
+			{ 250, 18, 5 }, { 232, 211, 151 }, { 224, 90, 42 }, { 100, 0, 210 }, { 15, 135, 95 }, { 152, 203, 222 }, { 181, 159, 155 },
+			{ 116, 140, 205 }, { 217, 72, 72 }, { 220, 215, 200 }, { 180, 190, 210 } } };
+		const auto                        i = static_cast<std::size_t>(a_look);
+		return i < kLooks ? kTints[i] : Rgb{ 255, 255, 255 };
 	}
 
 	Look LookOf(const LookFacts& a_facts) noexcept
@@ -1153,10 +1141,12 @@ namespace Crossfire::Core
 		return p + std::log(mult);
 	}
 
-	float Advantage(const Caster& a, const Caster& b, const StruggleConfig& a_config, bool a_surgeA, bool a_surgeB) noexcept
+	float Advantage(const Caster& a, const Caster& b, const StruggleConfig& a_config, bool a_surgeA, bool a_surgeB, bool a_overA, bool a_overB) noexcept
 	{
 		const float surge = std::log(Clamped(a_config.surgePower, kStruggleDefaults.surgePower, 1.0f, 3.0f));
-		const float d = (LogPower(a, a_config) + (a_surgeA ? surge : 0.0f)) - (LogPower(b, a_config) + (a_surgeB ? surge : 0.0f));
+		const float over = std::log(Clamped(a_config.breakpointPower, kStruggleDefaults.breakpointPower, 1.0f, 4.0f));
+		const float d = (LogPower(a, a_config) + (a_surgeA ? surge : 0.0f) + (a_overA ? over : 0.0f)) -
+		                (LogPower(b, a_config) + (a_surgeB ? surge : 0.0f) + (a_overB ? over : 0.0f));
 		// tanh(d / 2) is (Pa - Pb) / (Pa + Pb); taken on |d| so B over A is exactly the negative, whatever the maths library
 		float lead = std::isnan(d) ? 0.0f : d >= 0.0f ? std::tanh(0.5f * d) :
 		                                                -std::tanh(-0.5f * d);
@@ -1184,6 +1174,37 @@ namespace Crossfire::Core
 		const float cost = std::isfinite(a_cost) ? std::clamp(a_cost, 0.0f, kMaxCost) : 0.0f;
 		const float dt = std::isfinite(a_dt) ? std::clamp(a_dt, 0.0f, kMaxStep) : 0.0f;
 		return Clamped(a_config.magickaPressure, kStruggleDefaults.magickaPressure, 0.0f, 3.0f) * cost * toward * dt;
+	}
+
+	bool OnTheBeat(float a_age) noexcept
+	{
+		if (!std::isfinite(a_age) || a_age < 0.0f) {
+			return false;
+		}
+		const float into = std::fmod(a_age, kKnotBeat);
+		return std::min(into, kKnotBeat - into) <= kOnBeat;
+	}
+
+	float BreakpointShove(float a_age, const StruggleConfig& a_config) noexcept
+	{
+		const auto& d = kStruggleDefaults;
+		const float shove = Clamped(a_config.breakpointShove, d.breakpointShove, 0.0f, 1.0f);
+		return std::min(shove * (OnTheBeat(a_age) ? Clamped(a_config.breakpointBeat, d.breakpointBeat, 1.0f, 3.0f) : 1.0f), 1.0f);
+	}
+
+	float Breakpoint(Struggle& a_s, bool a_sideA, float a_seconds, const StruggleConfig& a_config) noexcept
+	{
+		if (!a_config.breakpoint || a_s.phase != Phase::kLocked) {
+			return 0.0f;
+		}
+		const float age = std::isfinite(a_s.age) ? std::max(a_s.age, 0.0f) : 0.0f;
+		const float shove = BreakpointShove(age, a_config);
+		// A pushes toward B's hands (+1), B toward A's (-1); a shove that reaches the hands breaks through on the next step
+		a_s.balance = std::clamp(WithinOne(a_s.balance) + (a_sideA ? shove : -shove), -1.0f, 1.0f);
+		(a_sideA ? a_s.overA : a_s.overB) = std::isfinite(a_seconds) ? std::clamp(a_seconds, 0.0f, 60.0f) : 0.0f;
+		a_s.shoveAge = age;
+		a_s.shoveOnBeat = OnTheBeat(age);
+		return shove;
 	}
 
 	Struggle Begin(std::uint32_t a_shooterA, std::uint32_t a_shooterB, Action a_reaction, Vec3 a_meet, Vec3 a_muzzleA, Vec3 a_muzzleB,
@@ -1227,7 +1248,7 @@ namespace Crossfire::Core
 		const float dt = std::isfinite(a_dt) && a_dt > 0.0f ? std::min(a_dt, kMaxStep) : 0.0f;
 		// only Begin and Advance write a struggle, but nothing that is not a number may stick
 		a_s.balance = WithinOne(a_s.balance);
-		for (float* f : { &a_s.age, &a_s.quietA, &a_s.quietB, &a_s.timer, &a_s.surgeA, &a_s.surgeB }) {
+		for (float* f : { &a_s.age, &a_s.quietA, &a_s.quietB, &a_s.timer, &a_s.surgeA, &a_s.surgeB, &a_s.overA, &a_s.overB }) {
 			*f = std::isfinite(*f) ? std::clamp(*f, 0.0f, kNever) : 0.0f;
 		}
 		a_s.nextSpark = std::isfinite(a_s.nextSpark) ? std::clamp(a_s.nextSpark, 0.0f, kSparkEvery) : kSparkEvery;
@@ -1288,7 +1309,12 @@ namespace Crossfire::Core
 			}
 		}
 
-		a_s.lead = step.lead = Advantage(a, b, a_config, a_config.surge && a_s.surgeA > 0.0f, a_config.surge && a_s.surgeB > 0.0f);
+		// an Overdrive released during the lock pushes harder until its burst is over
+		a_s.overA = std::max(a_s.overA - dt, 0.0f);
+		a_s.overB = std::max(a_s.overB - dt, 0.0f);
+		const bool over = a_config.breakpoint;
+		a_s.lead = step.lead = Advantage(a, b, a_config, a_config.surge && a_s.surgeA > 0.0f, a_config.surge && a_s.surgeB > 0.0f,
+			over && a_s.overA > 0.0f, over && a_s.overB > 0.0f);
 		// one side unseen for a moment (a gap in its spray): the lock holds where it is
 		if (both) {
 			// the lock holds where the streams met for kLockIn; only the part of this step after that pushes
@@ -1580,12 +1606,12 @@ namespace Crossfire::Core
 
 		struct Setting
 		{
-			std::string_view section, key;
-			Type             type;
-			float            lo, hi;
-			float (*get)(const Config&);
-			void (*set)(Config&, float);
-			std::string_view note;
+			std::string_view section{}, key{};
+			Type             type{};
+			float            lo{}, hi{};
+			float (*get)(const Config&){};
+			void (*set)(Config&, float){};
+			std::string_view note{};
 		};
 
 #define CF_BOOL(sec, key, field, note)                                                                                                                  \
@@ -1652,6 +1678,10 @@ namespace Crossfire::Core
 			CF_FLOAT("Power", "MagickaPressure", struggle.magickaPressure, 0.0f, 3.0f, "the caster being pushed back pays extra magicka, more the further back (0: only the spell's own cost)"),
 			CF_BOOL("Power", "Surge", struggle.surge, "once per struggle, a caster pushed most of the way back surges for 3 seconds"),
 			CF_FLOAT("Power", "SurgePower", struggle.surgePower, 1.0f, 3.0f, "how much harder a surging caster pushes"),
+			CF_BOOL("Power", "Breakpoint", struggle.breakpoint, "Overdrive released during a lock shoves the meeting point toward the other caster (Overdrive Breakpoint)"),
+			CF_FLOAT("Power", "BreakpointShove", struggle.breakpointShove, 0.0f, 1.0f, "how far it moves: the share of the way from where the streams met to their hands"),
+			CF_FLOAT("Power", "BreakpointBeat", struggle.breakpointBeat, 1.0f, 3.0f, "times that, released on a pulse of the meeting point (the struggle bar shows the pulse)"),
+			CF_FLOAT("Power", "BreakpointPower", struggle.breakpointPower, 1.0f, 4.0f, "how much harder you push for the rest of that Overdrive"),
 			CF_BOOL("Aftermath", "BreakCast", struggle.breakCast, "the overwhelmed caster's spell is interrupted, in the hand that lost"),
 			CF_FLOAT("Aftermath", "BreakTime", struggle.breakTime, 0.0f, 5.0f, "seconds the overwhelmed caster reels: any spray or beam they cast in that time fizzles"),
 			CF_BOOL("Aftermath", "StaggerLoser", struggle.stagger, "the overwhelmed caster staggers, with the game's own stagger (not dragons)"),
@@ -1672,13 +1702,16 @@ namespace Crossfire::Core
 			CF_BOOL("Show", "BarNames", struggle.barNames, "your name and theirs over the bar"),
 			CF_BOOL("Show", "BarSkills", struggle.barSkills, "both magic skills under the bar"),
 			CF_BOOL("Effects", "Explosions", explosions, "a destroyed projectile bursts where it was hit, with its own explosion"),
-			CF_BOOL("Effects", "SafeExplosionsOnly", safeExplosionsOnly, "skip an explosion that would do more than show (damage, an enchantment, something it spawns)"),
+			CF_BOOL("Effects", "SafeExplosionsOnly", safeExplosionsOnly, "skip an explosion that would do more than show (damage, an enchantment, a push, something it spawns)"),
 			CF_BOOL("Effects", "StandInBursts", standInBursts, "a spell with no explosion of its own (Firebolt, Ice Spike, Lightning Bolt) bursts as its element's spells do"),
 			CF_FLOAT("Effects", "BurstScale", burstScale, 0.5f, 3.0f, "how big a clash's burst is"),
+			CF_BOOL("Effects", "Designs", designs, "a clash's own effect, drawn for its kind of spell in its color, on top of its burst"),
+			CF_FLOAT("Effects", "ClashLight", clashLight, 0.0f, 300.0f, "percent: the light a clash's design casts on the ground and on its smoke and pieces (0 = none)"),
+			CF_BOOL("Effects", "ParticleLights", particleLights, "the designs' bursts and flying pieces light their surroundings with ENB's or Community Shaders' particle lights"),
 			CF_INT("Effects", "MaxExplosionsPerFrame", maxExplosionsPerFrame, 0.0f, 32.0f, "at most this many bursts in one frame"),
 			CF_FLOAT("Effects", "ExplosionCooldown", explosionCooldown, 0.0f, 5.0f, "seconds between bursts for the same two shooters (sprays clash many times a second)"),
 			CF_INT("Effects", "MaxContactsPerFrame", maxContactsPerFrame, 1.0f, 512.0f, "at most this many clashes are settled in one frame"),
-			CF_FLOAT("Player", "SkillXP", skillXP, 0.0f, 1000.0f, "skill experience for each enemy projectile one of yours destroys (0: none)"),
+			CF_FLOAT("Player", "SkillXP", skillXP, 0.0f, 1000.0f, "skill experience when one of your projectiles destroys an enemy's, at most once every half second (0: none)"),
 			CF_BOOL("AutoLock", "LockYours", lockYours, "your bolts fly at the enemy they are cast toward"),
 			CF_BOOL("AutoLock", "LockOthers", lockOthers, "every other caster's bolts fly at whoever it fights"),
 			CF_BOOL("AutoLock", "SteerIntoSpells", steer, "a bolt turns into an oncoming enemy spell that would nearly miss it"),
@@ -1801,6 +1834,16 @@ namespace Crossfire::Core
 		keywords[static_cast<std::size_t>(Element::kFire)] = { "MagicDamageFire" };
 		keywords[static_cast<std::size_t>(Element::kFrost)] = { "MagicDamageFrost" };
 		keywords[static_cast<std::size_t>(Element::kShock)] = { "MagicDamageShock" };
+	}
+
+	std::vector<std::pair<std::string_view, float>> SettingValues(const Config& a_config)
+	{
+		std::vector<std::pair<std::string_view, float>> out;
+		out.reserve(kSettings.size());
+		for (const auto& s : kSettings) {
+			out.emplace_back(s.key, s.get(a_config));
+		}
+		return out;
 	}
 
 	Range RangeOf(std::string_view a_key) noexcept

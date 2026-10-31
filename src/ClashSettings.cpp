@@ -7,10 +7,13 @@
 //                                      elements does to each other, and what never clashes. Hand-edited; never written.
 //   SpellMasteryHeat Clash\*.ini       patches (another mod's spells, say), read in alphabetical order, same sections
 //   SpellMasteryHeat Clashes.ini       the settings, written by the menu (Core::WriteSettings); may also hold rules
-// Parsing is Core::ParseIni (Core.cpp, tested in tests/); this reads the files, resolves the excluded forms and hands
+// Parsing is Core::ParseIni (ClashCore.cpp, tested in tests/); this reads the files, resolves the excluded forms and hands
 // the result to the main thread.
 
 #include "ClashShared.h"
+#include "Guarded.h"
+#include "IniText.h"
+#include "Plugin.h"
 
 namespace Crossfire
 {
@@ -24,9 +27,10 @@ namespace Crossfire
 		Core::Config                   gLive;      // main thread only
 		std::unordered_set<RE::FormID> gExcluded;  // main thread only
 
-		std::mutex               gMenuLock;  // guards the two below
+		std::mutex               gMenuLock;  // guards the three below
 		Core::Config             gMenu;
 		std::vector<std::string> gNotes;
+		std::uint64_t            gMenuGen{ 0 };  // counts the changes to gMenu, so a copy can tell it went stale
 
 		[[nodiscard]] bool ReadFile(const std::filesystem::path& a_path, std::string& a_out)
 		{
@@ -75,18 +79,16 @@ namespace Crossfire
 				return out;
 			}
 			for (std::filesystem::directory_iterator it(kPatches, ec), end; !ec && it != end; it.increment(ec)) {
-				auto ext = Core::PathText(it->path().extension());
-				std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				if (ext == ".ini" && it->is_regular_file(ec)) {
+				if (IniText::SameText(Core::PathText(it->path().extension()), ".ini") && it->is_regular_file(ec)) {
 					out.push_back(it->path());
 				}
 			}
-			std::ranges::sort(out, [](const auto& a, const auto& b) {
-				auto x = Core::PathText(a.filename()), y = Core::PathText(b.filename());
-				std::ranges::transform(x, x.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				std::ranges::transform(y, y.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				return x < y;
-			});
+			const auto lower = [](const std::filesystem::path& a_p) {
+				auto s = Core::PathText(a_p.filename());
+				std::ranges::transform(s, s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				return s;
+			};
+			std::ranges::sort(out, {}, lower);
 			return out;
 		}
 
@@ -129,9 +131,7 @@ namespace Crossfire
 		// LoadSettings): the menu's writer writes only its own sections, so a save carries these over as they were
 		[[nodiscard]] std::string RuleSections(const std::filesystem::path& a_path)
 		{
-			const auto same = [](std::string_view a_a, std::string_view a_b) {
-				return std::ranges::equal(a_a, a_b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
-			};
+			using IniText::SameText;
 			std::ifstream in(a_path, std::ios::binary);
 			std::string   out;
 			std::string   line;
@@ -141,7 +141,7 @@ namespace Crossfire
 				if (start != std::string::npos && line[start] == '[') {
 					const auto        end = line.find(']', start);
 					const std::string name = line.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
-					keep = same(name, "Elements") || same(name, "Reactions") || same(name, "Exclude");
+					keep = SameText(name, "Elements") || SameText(name, "Reactions") || SameText(name, "Exclude");
 				}
 				if (keep) {
 					out += line;
@@ -153,31 +153,9 @@ namespace Crossfire
 
 		void Save(const Core::Config& a_config)
 		{
-			const std::filesystem::path path(kSettings), temp(std::string(kSettings) + ".tmp");
+			const std::filesystem::path path(kSettings);
 			const std::string           rules = RuleSections(path);
-			{
-				std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-				if (!out) {
-					SKSE::log::warn("settings: {} could not be written", Core::PathText(temp));
-					return;
-				}
-				out << Core::WriteSettings(a_config);
-				if (!rules.empty()) {
-					out << '\n'
-						<< rules;
-				}
-				if (!out.flush()) {
-					SKSE::log::warn("settings: {} could not be written", Core::PathText(temp));
-					return;
-				}
-			}
-			// written whole, then swapped in: a crash mid-write cannot leave half a file
-			std::error_code ec;
-			std::filesystem::rename(temp, path, ec);
-			if (ec) {
-				SKSE::log::warn("settings: {} could not be replaced ({})", kSettings, ec.message());
-				std::filesystem::remove(temp, ec);
-			}
+			Plugin::WriteWhole(path, Core::WriteSettings(a_config) + (rules.empty() ? std::string() : '\n' + rules), std::ios::binary);
 		}
 	}
 
@@ -200,6 +178,7 @@ namespace Crossfire
 			std::scoped_lock lock(gMenuLock);
 			gMenu = config;
 			gNotes = notes;
+			++gMenuGen;
 		}
 		std::size_t keywords = 0;
 		for (const auto& list : config.keywords) {
@@ -221,6 +200,62 @@ namespace Crossfire
 		return gMenu;
 	}
 
+	Core::Config MenuCopy(std::uint64_t& a_gen)
+	{
+		std::scoped_lock lock(gMenuLock);
+		a_gen = gMenuGen;
+		return gMenu;
+	}
+
+	namespace
+	{
+		// the menu's copy, as it stands after a change, goes to the main thread (tasks run in order: the last one wins)
+		void Hand(Core::Config a_config, bool a_save)
+		{
+			auto* tasks = SKSE::GetTaskInterface();
+			if (!tasks) {
+				return;
+			}
+			tasks->AddTask([config = std::move(a_config), a_save]() {
+				Safe::Guarded("the clash settings taken", [&] {
+					const bool wasOn = gLive.enabled;
+					TakeSettings(gLive, config);
+					ClearInfo();  // a breath shout's spray is priced from ShoutStrength when first seen
+					if (wasOn != gLive.enabled) {
+						SKSE::log::info("turned {}", gLive.enabled ? "on" : "off");
+					}
+					if (a_save) {
+						Save(gLive);
+					}
+				});
+			});
+		}
+	}
+
+	std::array<bool, 3> VisualsNow()
+	{
+		const auto c = MenuCopy();
+		return { c.designs, c.clashLight > 0.0f, c.particleLights };
+	}
+
+	void SetVisuals(const std::array<bool, 3>& a_on, bool a_save)
+	{
+		Hand(
+			[&] {
+				std::scoped_lock lock(gMenuLock);
+				static float     before = 100.0f;  // the player's own percent comes back when the preset turns the light on again
+				if (gMenu.clashLight > 0.0f) {
+					before = gMenu.clashLight;
+				}
+				gMenu.designs = a_on[0];
+				gMenu.clashLight = a_on[1] ? before : 0.0f;
+				gMenu.particleLights = a_on[2];
+				++gMenuGen;
+				return gMenu;
+			}(),
+			a_save);
+	}
+
 	std::vector<std::string> LoadNotes()
 	{
 		std::scoped_lock lock(gMenuLock);
@@ -229,33 +264,42 @@ namespace Crossfire
 
 	void Submit(const Core::Config& a_config, bool a_save)
 	{
-		{
+		Hand(
+			[&] {
+				std::scoped_lock lock(gMenuLock);
+				TakeSettings(gMenu, a_config);
+				++gMenuGen;
+				return gMenu;
+			}(),
+			a_save);
+	}
+
+	bool SubmitIf(const Core::Config& a_config, bool a_save, std::uint64_t a_gen)
+	{
+		bool taken = false;
+		auto now = [&] {
 			std::scoped_lock lock(gMenuLock);
-			TakeSettings(gMenu, a_config);
-		}
-		auto* tasks = SKSE::GetTaskInterface();
-		if (!tasks) {
-			return;
-		}
-		tasks->AddTask([a_config, a_save]() {
-			const bool wasOn = gLive.enabled;
-			TakeSettings(gLive, a_config);
-			ClearInfo();  // a breath shout's spray is priced from ShoutStrength when first seen
-			if (wasOn != gLive.enabled) {
-				SKSE::log::info("turned {}", gLive.enabled ? "on" : "off");
+			taken = gMenuGen == a_gen;
+			if (taken) {
+				TakeSettings(gMenu, a_config);
+				++gMenuGen;
 			}
-			if (a_save) {
-				Save(gLive);
-			}
-		});
+			return gMenu;
+		}();
+		if (taken || a_save) {
+			Hand(std::move(now), a_save);
+		}
+		return taken;
 	}
 
 	void ReloadSoon()
 	{
 		if (auto* tasks = SKSE::GetTaskInterface()) {
 			tasks->AddTask([]() {
-				LoadSettings();
-				SKSE::log::info("settings reloaded from the menu");
+				Safe::Guarded("the clash settings reloaded", [] {
+					LoadSettings();
+					SKSE::log::info("settings reloaded from the menu");
+				});
 			});
 		}
 	}

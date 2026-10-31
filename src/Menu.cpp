@@ -10,6 +10,8 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
 #endif
+#include "ClashShared.h"
+#include "Guarded.h"
 #include "Plugin.h"
 
 // SKSE Menu Framework's own header (theirs, MIT): its warnings are not ours, and ours are errors (xmake.lua) - under
@@ -98,7 +100,7 @@ namespace Plugin
 			Tip(a_tip);
 		}
 
-		void __stdcall RenderSettings()
+		void DrawSettings()
 		{
 			const HeatStyle style;
 			const Settings  before = Config();
@@ -127,6 +129,26 @@ namespace Plugin
 					"The damage bonus is the same in all three. Custom: you changed a value here or in the advanced file.");
 			}
 
+			// Full or Performance: the costly effects on or off together; which ones Performance covers is the advanced file's
+			// [Performance] section
+			Heading(Icon::kStar, "Visuals");
+			{
+				const auto               clash = Crossfire::VisualsNow();
+				const auto               now = SettingsText::VisualsOf(s, clash);
+				static const char* const kNames[] = { "Full (the default)", "Performance", "Custom" };
+				int                      pick = now ? *now : 2;
+				if (ImGuiMCP::Combo("Visual preset", &pick, kNames, 3) && pick < 2) {
+					const bool performance = pick == 1;
+					SettingsText::ApplyVisuals(s, performance);
+					Crossfire::SetVisuals(SettingsText::ClashVisuals(s, performance), true);
+					save = true;
+				}
+				Tip("Full: every effect on. Performance: the costly ones off - by default the clashes' own effects, their lights and "
+					"particle lights, your explosions growing, the flare, the red-zone sparks and the lingering embers, afterglows and smoulders. Which ones Performance turns off is "
+					"yours to pick: the [Performance] section of SpellMasteryHeat Advanced.ini, one line each (1 = off). Custom: you "
+					"changed one of them yourself.");
+			}
+
 			Heading(Icon::kBolt, "Overdrive");
 			{
 				static const char* const kModes[] = { "Automatic", "Key press", "Off" };
@@ -147,12 +169,14 @@ namespace Plugin
 				// the fallback, should the menu keep the tapped key from reaching the game: a short list
 				static const int         kCodes[] = { 34, 47, 19, 33, 35, 44, 45, 46, 48, 58, 256 + 2, 256 + 3 };
 				static const char* const kNames[] = { "G", "V", "R", "F", "H", "Z", "X", "C", "B", "Caps Lock", "Mouse button 3", "Mouse button 4" };
-				int                      pick = -1;
-				for (int i = 0; i < 12; ++i) {
+				static_assert(std::size(kCodes) == std::size(kNames));
+				constexpr int kCount = static_cast<int>(std::size(kCodes));
+				int           pick = -1;
+				for (int i = 0; i < kCount; ++i) {
 					pick = kCodes[i] == s.overdriveKey ? i : pick;
 				}
 				ImGuiMCP::SetNextItemWidth(column * 0.5f);
-				if (ImGuiMCP::Combo("or pick one", &pick, kNames, 12) && pick >= 0) {
+				if (ImGuiMCP::Combo("or pick one", &pick, kNames, kCount) && pick >= 0) {
 					s.overdriveKey = kCodes[pick];
 					save = true;
 				}
@@ -164,8 +188,10 @@ namespace Plugin
 				"On: a full Overdrive bar goes only when your Heat lets it (the preset decides how: the sweet spot, or below the red line). "
 				"Off: it goes as soon as the bar is full.",
 				save);
-			ImGuiMCP::BeginDisabled(!t.heatGate);
-			Toggle("Misfires", t.misfire, "Releasing Overdrive past the red line misfires: your spells sputter and your Heat drops a stage.", save);
+			// only the key can release Overdrive too hot: automatic waits for the gate
+			ImGuiMCP::BeginDisabled(!t.heatGate || t.mode != Heat::OverdriveMode::kKey);
+			Toggle("Misfires", t.misfire,
+				"With the Overdrive key: pressing it past the red line misfires - your spells sputter and your Heat drops a stage.", save);
 			ImGuiMCP::SameLine(column);
 			ImGuiMCP::BeginDisabled(!t.misfire);
 			Toggle("Backlash", t.backlash, "A misfire also staggers you and takes a bite out of your magicka.", save);
@@ -191,8 +217,8 @@ namespace Plugin
 			{
 				static const char* const kBoost[] = { "Damage only", "All harmful spell effects" };
 				Choice("What is boosted", s.boost, kBoost, 2,
-					"Damage only: spells that hurt. All harmful spell effects: every harmful effect's strength (fear, paralysis, "
-					"slows and so on).",
+					"Damage only: spells that hurt. All harmful spell effects: every harmful effect's strength (drains, slows, "
+					"paralysis and so on); the highest level a fear, calm or frenzy spell works on stays the spell's own.",
 					save);
 			}
 			ImGuiMCP::EndDisabled();
@@ -223,15 +249,15 @@ namespace Plugin
 				save);
 			ImGuiMCP::BeginDisabled(!s.spellGrowth);
 			Toggle("Impacts grow", s.impactsGrow,
-				"Your explosions, your hazards (walls, runes, clouds) and the fire or frost your spells leave on a target grow with your "
-				"spells, keeping the size they were made at. Big explosions cost frames.",
+				"Your explosions and hazards (walls, runes, clouds) grow with your spells, keeping the size they were made at, and the fire "
+				"or frost your spells leave on a target burns faster. Big explosions cost frames.",
 				save);
 			ImGuiMCP::SameLine(column);
 			Toggle("Overdrive focus", s.overdriveFocus, "As Overdrive fires your spells draw in and swell back, then burn steady.", save);
 			ImGuiMCP::EndDisabled();
 			Toggle("Wild in the red", s.redZoneWild,
-				"While your Heat is in the red outside Overdrive, your spells pulse, stutter and blink out, and the hand lights and the "
-				"bar stutter with them. Releasing Overdrive steadies them.",
+				"While your Heat is in the red outside Overdrive, your spells pulse, stutter and blink out, and the hand lights blink with "
+				"them. Releasing Overdrive steadies them.",
 				save);
 			ImGuiMCP::SameLine(column);
 			Toggle("Sparks in the red", s.redSparks,
@@ -240,12 +266,23 @@ namespace Plugin
 				save);
 			Toggle("Overdrive flare", s.focusFlare,
 				"As Overdrive fires, sparks of your spell's element rush into each casting hand and flare white-hot there.", save);
+			Toggle("Hand embers", s.handEmbers,
+				"After heavy casting (Hot or hotter) your hands keep shedding embers, frost or sparks of your spell's element for a few "
+				"seconds - longer the hotter you are.",
+				save);
+			ImGuiMCP::SameLine(column);
+			Toggle("Hand afterglow", s.handAfterglow,
+				"After heavy casting the light in your hand fades out slowly in your spell's color instead of going off at once.", save);
+			Toggle("Hit afterglow", s.hitAfterglow,
+				"From Warm on, whoever your spell hits glows a moment in its color, the light fading out slowly.", save);
+			ImGuiMCP::SameLine(column);
+			Toggle("Smoulder", s.smoulder, "From Warm on, whoever your spell hits smoulders a few seconds: embers, frost or sparks.", save);
 			Toggle("Scorch and frost marks", s.marks,
 				"From Overheating on, your fire and frost spells leave a burning or frozen patch where they land for a few seconds.", save);
 			ImGuiMCP::SameLine(column);
 			ImGuiMCP::BeginDisabled(!s.marks);
 			Toggle("Marks hurt", s.markHurt,
-				"The patches hurt anyone who stands in them - never you, your followers or your summons. Fire and frost resistance "
+				"The patches hurt enemies who stand in them - never you, your followers, your summons or anyone not fighting you. Fire and frost resistance "
 				"protect. Stronger in Overdrive.",
 				save);
 			ImGuiMCP::EndDisabled();
@@ -290,7 +327,7 @@ namespace Plugin
 			}
 		}
 
-		void __stdcall RenderDebug()
+		void DrawDebug()
 		{
 			const HeatStyle style;
 			{
@@ -372,6 +409,9 @@ namespace Plugin
 			}
 			Tip("Puts your Heat at the start of this stage now (Overdrive starts it, gate or not).");
 		}
+
+		void __stdcall RenderSettings() { Safe::Guarded("the Settings page", DrawSettings); }
+		void __stdcall RenderDebug() { Safe::Guarded("the Debug page", DrawDebug); }
 	}
 
 	void RegisterMenu()

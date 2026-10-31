@@ -39,8 +39,6 @@ namespace Crossfire
 	{
 		using Core::Vec3;
 
-		Vec3 V(const RE::NiPoint3& a) { return { a.x, a.y, a.z }; }
-
 		constexpr float kRadians = 0.017453292f;
 		constexpr float kLaunchReach = 300.0f;     // units a bolt may have flown and still count as just launched
 		constexpr float kAimedAlready = 0.99996f;  // cos 0.5 degrees: a beam already pointing this close is not turned again
@@ -70,18 +68,19 @@ namespace Crossfire
 		}
 
 		// the player's target: the hostile actor nearest the bolt's way, inside the lock cone and range
-		[[nodiscard]] RE::Actor* PlayerTarget(RE::PlayerCharacter* a_player, Vec3 a_from, Vec3 a_dir, const Core::Config& a_cfg)
+		[[nodiscard]] RE::NiPointer<RE::Actor> PlayerTarget(RE::PlayerCharacter* a_player, Vec3 a_from, Vec3 a_dir, const Core::Config& a_cfg)
 		{
 			auto* lists = RE::ProcessLists::GetSingleton();
 			if (!lists) {
 				return nullptr;
 			}
-			RE::Actor* best = nullptr;
-			float      bestDot = std::cos(a_cfg.lockCone * kRadians);
+			RE::NiPointer<RE::Actor> best;
+			float                    bestDot = std::cos(a_cfg.lockCone * kRadians);
+			const Vec3               dir = Core::UnitOf(a_dir);
 			for (const auto& h : lists->highActorHandles) {
 				auto  ref = h.get();
 				auto* a = ref.get();
-				if (!a || a == a_player || a->IsDead() || a->IsDisabled() || !a->IsHostileToActor(a_player)) {
+				if (!a || a == a_player || a->IsDead() || a->IsDisabled()) {
 					continue;
 				}
 				// chest height off the position: the skeleton is searched only for the one picked (LockAtLaunch)
@@ -90,17 +89,18 @@ namespace Crossfire
 				if (!(d > 1.0f) || d > a_cfg.lockRange) {
 					continue;
 				}
-				const float dot = Core::Dot(Core::UnitOf(a_dir), to * (1.0f / d));
-				if (dot > bestDot) {
+				// hostility last: the costly test, asked only of one that would beat the best so far
+				const float dot = Core::Dot(dir, to * (1.0f / d));
+				if (dot > bestDot && a->IsHostileToActor(a_player)) {
 					bestDot = dot;
-					best = a;
+					best = ref;
 				}
 			}
 			return best;
 		}
 
 		// whom this shooter's bolts lock onto: nullptr = nobody (the switch is off, or no target)
-		[[nodiscard]] RE::Actor* TargetFor(RE::Actor* a_shooter, Vec3 a_from, Vec3 a_dir, const Core::Config& a_cfg)
+		[[nodiscard]] RE::NiPointer<RE::Actor> TargetFor(RE::Actor* a_shooter, Vec3 a_from, Vec3 a_dir, const Core::Config& a_cfg)
 		{
 			if (!a_shooter) {
 				return nullptr;
@@ -116,9 +116,8 @@ namespace Crossfire
 			if (!a_cfg.lockOthers) {
 				return nullptr;
 			}
-			auto  target = a_shooter->GetActorRuntimeData().currentCombatTarget.get();
-			auto* t = target.get();
-			return t && !t->IsDead() ? t : nullptr;
+			auto target = a_shooter->GetActorRuntimeData().currentCombatTarget.get();
+			return target && !target->IsDead() ? target : RE::NiPointer<RE::Actor>();
 		}
 
 		[[nodiscard]] bool Lockable(const Info& a_info, const RE::Projectile* a_p, const Core::Config& a_cfg)
@@ -175,8 +174,8 @@ namespace Crossfire
 		}
 		const Vec3 from = V(a_p->GetPosition());
 		const Vec3 dir = Core::UnitOf(V(rd.linearVelocity));
-		auto*      target = TargetFor(a_shooter, from, dir, a_cfg);
-		const auto aim = AimPointOf(target);
+		const auto target = TargetFor(a_shooter, from, dir, a_cfg);
+		const auto aim = AimPointOf(target.get());
 		if (!aim) {
 			return false;
 		}
@@ -213,7 +212,8 @@ namespace Crossfire
 		auto*      shooter = shooterRef ? shooterRef->As<RE::Actor>() : nullptr;
 		const Vec3 from = V(a_p->GetPosition());
 		const Vec3 dir = Core::DirectionFromAngles(a_p->data.angle.x, a_p->data.angle.z);
-		const auto aim = AimPointOf(TargetFor(shooter, from, dir, cfg));
+		const auto target = TargetFor(shooter, from, dir, cfg);
+		const auto aim = AimPointOf(target.get());
 		const auto way = aim ? Core::LockDirection(from, dir, *aim, cfg.lockCone * kRadians, cfg.lockRange) : std::nullopt;
 		if (!way || Core::Dot(Core::UnitOf(dir), *way) > kAimedAlready) {
 			return;  // nothing to lock onto, or already aimed by an earlier pick of the same bolt
